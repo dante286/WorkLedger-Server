@@ -17,10 +17,10 @@ only at `WorkLedger.Contracts` (see S0).
 |---|------|-----------|------------|
 | S0 | [S0-scaffold-and-contracts.md](S0-scaffold-and-contracts.md) | TBD | — |
 | S1 | [S1-persistence-and-datamodel.md](S1-persistence-and-datamodel.md) | TBD | S0 |
-| S2 | [S2-auth.md](S2-auth.md) | TBD | S1 |
-| S3 | [S3-sync-endpoints.md](S3-sync-endpoints.md) | TBD | S1, S2 |
-| S4 | [S4-reports.md](S4-reports.md) | TBD | S1 (parallel with S3) |
-| S5 | [S5-deployment-and-docs.md](S5-deployment-and-docs.md) | TBD | S3, S4 |
+| S2 | [S2-auth.md](S2-auth.md) | WL-75 (done) | S1 |
+| S3 | [S3-sync-endpoints.md](S3-sync-endpoints.md) | WL-76 (WL-82/83/84) | S1, S2 |
+| S4 | [S4-reports.md](S4-reports.md) | WL-77 | S1 (parallel with S3) |
+| S5 | [S5-deployment-and-docs.md](S5-deployment-and-docs.md) | WL-78 | S3, S4 |
 
 > **Ticket numbers:** like the client plans, these use `Sn` as plan IDs with tickets left **TBD** — create each
 > fresh in Jira (project `WL`, cloud ID `ea0603f1-23bf-48c8-b2f9-f77728f8eb23`) when you pick it up, and it'll
@@ -45,8 +45,11 @@ client repo as part of these server plans.
 
 ## Contract inputs Claude Code will need
 
-The server's typed columns and payload DTOs must exactly mirror the client's entity shapes. Before S1/S3,
-have the exact field lists from the client repo on hand (paste them into the session):
+The server's typed columns and payload DTOs must exactly mirror the client's entity shapes. **S3 has already
+done this reconciliation** — see its "Client vs server: who does what" table, the normative reconciliation
+rules, and the four cross-repo gaps (G1–G4) it found, all verified against client `main` @ `7ae7565`
+(2026-08-11). Start there rather than re-deriving it. For any other plan, have the exact field lists from the
+client repo on hand (paste them into the session):
 - `Models/Project.cs`, `Models/TaskItem.cs`, `Models/TimeEntry.cs` (including the `Version` / `OriginDeviceId`
   / `SyncId` fields added in client Plans 2 and its addendum)
 - `Models/SyncQueue.cs` and `Sync/RemoteChange.cs` (the wire shape the client already emits/expects)
