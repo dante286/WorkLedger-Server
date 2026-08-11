@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/WorkLedger.Contracts/WorkLedger.Contracts.csproj" />
+    <Project Path="src/WorkLedger.Server/WorkLedger.Server.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/WorkLedger.Server.Tests/WorkLedger.Server.Tests.csproj" />
+  </Folder>
+</Solution>

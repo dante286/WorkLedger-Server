@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: workledger-postgres-dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: workledger
+      POSTGRES_PASSWORD: workledger
+      POSTGRES_DB: workledger
+    ports:
+      - "55432:5432"
+    volumes:
+      - workledger-postgres-dev-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U workledger -d workledger"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  workledger-postgres-dev-data:
