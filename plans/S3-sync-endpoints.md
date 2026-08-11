@@ -65,13 +65,18 @@ constrained by what the client already does. Verified against client `main` @ `7
 Let `incoming` be a `SyncChangeDto` and `existing` the row matched by `(AccountId, EntityId)`.
 
 - **A. Higher version wins.** Accept and apply when `incoming.Version > existing.Version`.
-- **B. Equal or lower version loses.** The server keeps its row, writes nothing, and returns
-  `Accepted = false` with `AuthoritativeVersion` + `AuthoritativePayloadJson` so the client can adopt the
-  winner immediately. **No `CreatedAt` tie-break** — the earlier draft of this plan specified one, but the
-  client cannot implement it: `RemoteChange` (`Sync/RemoteChange.cs`) has no `CreatedAt` field at all, and
-  `RemoteWins` is a bare `>` comparison. A server-side timestamp tie-break would make the two sides disagree,
-  which is the exact failure mode this rule exists to prevent. `SyncChangeDto.CreatedAt` is still carried and
-  stored — it is just not an input to the decision.
+- **B. Equal or lower version loses — *from a different device*.** The server keeps its row, writes nothing,
+  and returns `Accepted = false` with `AuthoritativeVersion` + `AuthoritativePayloadJson` so the client can
+  adopt the winner immediately. **No `CreatedAt` tie-break** — the earlier draft of this plan specified one,
+  but the client cannot implement it: `RemoteChange` (`Sync/RemoteChange.cs`) has no `CreatedAt` field at all,
+  and `RemoteWins` is a bare `>` comparison. A server-side timestamp tie-break would make the two sides
+  disagree, which is the exact failure mode this rule exists to prevent. `SyncChangeDto.CreatedAt` is still
+  carried and stored — it is just not an input to the decision.
+
+  **The client must retire a queue row on `Accepted = false`, not retry it.** The server's answer is final —
+  re-pushing produces the same rejection forever, and today's `SyncOrchestrator` leaves anything not in
+  `AcceptedSyncQueueIds` pending. Adopting `AuthoritativePayloadJson` *and* dropping the queue row is the
+  correct client response; that is WL-94's half of this contract.
 - **C. No existing row → insert.** Deserialize `PayloadJson` into the Contracts payload DTO, map to typed
   columns, set `AccountId` from the token, take `Version` / `OriginDeviceId` / `CreatedAt` from the change.
 - **D. Deletes tombstone, and the server bumps the version.** A `"delete"` is accepted when
@@ -89,11 +94,25 @@ Let `incoming` be a `SyncChangeDto` and `existing` the row matched by `(AccountI
   existing row inserts a tombstone row (`IsDeleted = true`) so the delete still propagates to devices that
   received the create from a third device. This is a deliberate, narrow deviation from strict LWW; comment it
   with the reason, and see gap **G3** for the client-side fix that would let it be removed.
-- **E. Idempotent replay.** Re-pushing an applied change (same `SyncId`, same `Version`) is an **accepted
-  no-op**: do not bump the version and **do not touch the row at all** — any EF write would restamp
-  `UpdatedAt` and re-deliver the row to every other device on their next pull. A replayed *delete* against an
-  already-tombstoned row (`existing.IsDeleted && incoming.Version <= existing.Version`) is likewise an
-  accepted no-op, so a retried batch cannot ratchet the version upward.
+
+  Two corollaries worth stating, since both are observable: the delete's **payload is applied best-effort**
+  (the client sends the entity as the delete's payload, and we only reach this branch when that payload is at
+  least as new as the row, so it leaves the tombstone's columns at the last state anyone saw — but a missing
+  or unusable payload still tombstones). And a **winning update revives a tombstone** (`IsDeleted = false`):
+  LWW applied consistently means "edited after someone else deleted it" resolves to alive.
+- **E. Idempotent replay — the same-device carve-out to rule B.** When the losing change comes from the
+  **same device that authored the server's row** (`existing.OriginDeviceId == incoming.OriginDeviceId` and
+  `incoming.Version <= existing.Version`), the change is already reflected: it is a replay, a self-echo, or an
+  ack the client never received. Return `Accepted = true` so the client retires the queue row. Calling it a
+  conflict instead would leave that row pending and re-pushed on every sync, forever — a permanent queue leak
+  from a successful write.
+
+  Either way, **do not touch the row at all** — not merely "don't bump the version". Any EF write restamps
+  `UpdatedAt`, and `UpdatedAt` is the pull cursor, so an incidental write re-broadcasts the row to every other
+  device on their next pull. A no-op write is not free here; it is a broadcast.
+
+  A replayed *delete* against an already-tombstoned row (`existing.IsDeleted && incoming.Version <=
+  existing.Version`) is likewise an accepted no-op, so a retried batch cannot ratchet the version upward.
 - **F. Results are positional.** Return exactly one `SyncItemResult` per input change, in request order.
   `SyncItemResult.EntityId` alone is not a key: a single batch legitimately contains several queue rows for
   the same entity (create → update → delete), and the client's ack list is keyed by local `SyncQueue.Id`,
@@ -151,9 +170,11 @@ Let `incoming` be a `SyncChangeDto` and `existing` the row matched by `(AccountI
    - All payload JSON goes through the Contracts payload DTOs and `SyncJson.Options` (rule G) — no hand-rolled
      JSON shapes.
    - Per-item failures return `Accepted = false` with a `Reason` and **do not 500 the batch**: unknown
-     `EntityType`, unknown `Operation`, malformed `PayloadJson`, missing payload on a create/update, and — see
-     G1 — a task or time entry whose parent SyncId is `Guid.Empty`. Reject rather than storing an orphan; a
-     silent `Guid.Empty` parent is invisible until S4 reports come out wrong.
+     `EntityType`, unknown `Operation`, `EntityId == Guid.Empty`, `Version < 1` (client entities are born at
+     version 1, so a 0 means the pusher failed to lift `Version` out of `PayloadJson` — better to say so than
+     to let a version-0 row lose every comparison it will ever be in), malformed `PayloadJson`, missing payload
+     on a create/update, and — see G1 — a task or time entry whose parent SyncId is `Guid.Empty`. Reject rather
+     than storing an orphan; a silent `Guid.Empty` parent is invisible until S4 reports come out wrong.
    - 400 for a structurally invalid request body, 401 for missing/expired token (S2), never a raw stack trace.
 
 ## Cross-repo gaps found while reconciling (server does not fix these)
