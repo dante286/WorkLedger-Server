@@ -33,7 +33,16 @@ migrations. It will expand as later plans land.
    Host=localhost;Port=55432;Database=workledger;Username=workledger;Password=workledger
    ```
 
-2. Run the API:
+2. Set the auth secrets (never hardcoded — the app fails fast at startup if these are missing):
+
+   ```
+   export Jwt__SigningKey="$(openssl rand -base64 48)"
+   export Bootstrap__Secret="$(openssl rand -base64 32)"
+   ```
+
+   `Account__Name` is optional (defaults to `Default`) — it names the single v1 account seeded on startup.
+
+3. Run the API:
 
    ```
    dotnet run --project src/WorkLedger.Server
@@ -42,11 +51,16 @@ migrations. It will expand as later plans land.
    On startup the app runs `Database.Migrate()` against the connection string above (see
    `Database:MigrateOnStartup` in `appsettings.json`), so Postgres from step 1 must already be up and reachable —
    the app will fail to start otherwise. See `src/WorkLedger.Server/Data/README.md` for the tradeoffs of
-   migrating on boot.
+   migrating on boot. It also seeds the single v1 `Account` row (see S2) if one doesn't already exist.
 
    Then check:
    - `GET http://localhost:<port>/health` → `{ "status": "ok", "utc": "<UTC timestamp>" }`
    - `GET http://localhost:<port>/` → `{ "name": "WorkLedger.Server", "version": "..." }`
+   - `POST http://localhost:<port>/auth/register-device` with header `X-Bootstrap-Secret: <Bootstrap__Secret>`
+     and body `{ "deviceId": "<any GUID string>" }` → `{ "token": "<JWT>", "expiresAtUtc": "..." }`
+   - `GET http://localhost:<port>/auth/whoami` with header `Authorization: Bearer <token>` →
+     `{ "accountId": 1, "deviceId": "<the GUID you sent>" }`. Every other endpoint requires that same
+     `Authorization` header (401 without it).
 
 ## Testing
 
@@ -54,10 +68,13 @@ migrations. It will expand as later plans land.
 dotnet test WorkLedger-Server.slnx
 ```
 
-Runs the `/health` integration test plus the EF Core data-layer tests. Tests do not depend on
-`docker-compose.dev.yml` — the data-layer tests use Testcontainers to spin up their own disposable Postgres,
-and the `/health` test disables `Database:MigrateOnStartup` so it doesn't need a database at all. Testcontainers
-needs a working Docker daemon (present by default on GitHub's `ubuntu-latest` runners).
+Runs the `/health` integration test, the EF Core data-layer tests, and the auth tests (device bootstrap,
+JWT issuance/validation, 401s). Tests do not depend on `docker-compose.dev.yml` or any real secrets — the
+data-layer and auth tests each spin up their own disposable Postgres via Testcontainers, the auth tests supply
+throwaway `Jwt:SigningKey`/`Bootstrap:Secret` values via `WebApplicationFactory` config overrides (see
+`tests/WorkLedger.Server.Tests/TestConfig.cs`), and the `/health` test disables `Database:MigrateOnStartup` so
+it doesn't need a database at all. Testcontainers needs a working Docker daemon (present by default on GitHub's
+`ubuntu-latest` runners).
 
 ## CI
 
