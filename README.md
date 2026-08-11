@@ -1,20 +1,22 @@
 # WorkLedger Server
 
-Backend for WorkLedger — C# / ASP.NET Core Minimal APIs on .NET 10, EF Core + Npgsql → PostgreSQL (from S1
-onward), JWT bearer auth (from S2), xUnit + Testcontainers, Docker Compose.
+Backend for WorkLedger — C# / ASP.NET Core Minimal APIs on .NET 10, EF Core + Npgsql → PostgreSQL, JWT bearer
+auth (from S2), xUnit + Testcontainers, Docker Compose.
 
 This is a separate repository from `WorkLedger-Client`. The two meet only at `WorkLedger.Contracts` — see
 `plans/README.md` for the cross-repo contract handoff and the full build-plan sequence (S0–S5). This README
-covers only what S0 built: the solution scaffold, the `/health` endpoint, and local dev setup. It will expand
-as later plans land.
+covers what S0 and S1 built: the solution scaffold, the `/health` endpoint, and the EF Core data model/
+migrations. It will expand as later plans land.
 
 ## Stack
 
-- **src/WorkLedger.Server** — ASP.NET Core Minimal API (`net10.0`).
+- **src/WorkLedger.Server** — ASP.NET Core Minimal API (`net10.0`), EF Core + Npgsql. See
+  `src/WorkLedger.Server/Data/README.md` for the data layer and `dotnet ef` commands.
 - **src/WorkLedger.Contracts** — dependency-free class library with the sync wire DTOs and entity payload
   DTOs shared with the client. No ASP.NET/EF references, so the client can reference it later without
   pulling in server-only packages.
-- **tests/WorkLedger.Server.Tests** — xUnit, using `WebApplicationFactory<Program>` for integration tests.
+- **tests/WorkLedger.Server.Tests** — xUnit; `WebApplicationFactory<Program>` for the `/health` integration
+  test, `Testcontainers.PostgreSql` for the data-layer tests.
 
 ## Running locally
 
@@ -31,14 +33,16 @@ as later plans land.
    Host=localhost;Port=55432;Database=workledger;Username=workledger;Password=workledger
    ```
 
-   Nothing in `src/WorkLedger.Server` talks to this database yet — that starts in S1. This compose file exists
-   purely so `dotnet run` has a real Postgres available during development.
-
 2. Run the API:
 
    ```
    dotnet run --project src/WorkLedger.Server
    ```
+
+   On startup the app runs `Database.Migrate()` against the connection string above (see
+   `Database:MigrateOnStartup` in `appsettings.json`), so Postgres from step 1 must already be up and reachable —
+   the app will fail to start otherwise. See `src/WorkLedger.Server/Data/README.md` for the tradeoffs of
+   migrating on boot.
 
    Then check:
    - `GET http://localhost:<port>/health` → `{ "status": "ok", "utc": "<UTC timestamp>" }`
@@ -50,8 +54,10 @@ as later plans land.
 dotnet test WorkLedger-Server.slnx
 ```
 
-Runs the health-check integration test (and everything added in later plans). Tests do not depend on
-`docker-compose.dev.yml` — from S1 onward they use Testcontainers to spin up their own disposable Postgres.
+Runs the `/health` integration test plus the EF Core data-layer tests. Tests do not depend on
+`docker-compose.dev.yml` — the data-layer tests use Testcontainers to spin up their own disposable Postgres,
+and the `/health` test disables `Database:MigrateOnStartup` so it doesn't need a database at all. Testcontainers
+needs a working Docker daemon (present by default on GitHub's `ubuntu-latest` runners).
 
 ## CI
 
@@ -64,9 +70,11 @@ Not yet set up. `WorkLedger.Contracts` is authored here and will be consumed by 
 `ApiSyncProvider` is implemented (client Plan 6). Publishing to GitHub Packages, or a git submodule, is a
 follow-up — deferred per plan S0 since the client doesn't consume it yet.
 
-## Notes for S1+
+## Contract reconciliation
 
-The DTOs in `src/WorkLedger.Contracts/Payloads/EntityPayloads.cs` are **placeholders** copied from the plan
-skeleton, not yet reconciled against the client's `Models/Project.cs`, `Models/TaskItem.cs`, and
-`Models/TimeEntry.cs`. Confirm the exact field lists (and whether `TimeEntry` stores a computed duration vs.
-start/end) before S1/S3 depend on them.
+The DTOs in `src/WorkLedger.Contracts/Payloads/EntityPayloads.cs` are reconciled against the client's
+`Models/Project.cs`, `Models/TaskItem.cs`, and `Models/TimeEntry.cs` (checked 2026-08-11, client at
+`E:\GitHub-Repos\WorkLedger-Client`). Notably: `Project` has no `IsArchived`; `TaskItem` has `Notes` and
+`IsCompleted` in addition to `IsArchived`; `TimeEntry` stores both `StartTime`/`EndTime` **and** a persisted
+`DurationSeconds` (not computed-only). Parent links (`ProjectSyncId`, `TaskSyncId`) resolve by `SyncId`, never
+the client's local autoincrement `Id`/`ProjectId`/`TaskItemId`.
