@@ -1,8 +1,8 @@
 namespace WorkLedger.Contracts.Payloads;
 
-// PLACEHOLDER SHAPES — not yet reconciled against the client's Models/*.cs (see plans/S0, "Flag if
-// unclear"). Field lists here must be confirmed against WorkLedger-Client's Project.cs/TaskItem.cs/
-// TimeEntry.cs before S1/S3 depend on them.
+// Reconciled against WorkLedger-Client's Models/Project.cs, Models/TaskItem.cs, and Models/TimeEntry.cs
+// (client repo, checked 2026-08-11). Parent links use the client's cross-device SyncId, not its local
+// autoincrement int (ProjectId / TaskItemId) — see plans/S0 and the client's IVersionedEntity.cs.
 
 public sealed record ProjectPayload(
     Guid SyncId,
@@ -12,24 +12,26 @@ public sealed record ProjectPayload(
     DateTime CreatedAt,
     DateTime? UpdatedAt,
     int Version,
-    string? OriginDeviceId,
-    bool IsArchived);
+    string? OriginDeviceId);
 
 public sealed record TaskItemPayload(
     Guid SyncId,
     Guid ProjectSyncId,
     string? Name,
+    string? Notes,
+    bool IsCompleted,
+    bool IsArchived,
     DateTime CreatedAt,
     DateTime? UpdatedAt,
     int Version,
-    string? OriginDeviceId,
-    bool IsArchived);
+    string? OriginDeviceId);
 
 public sealed record TimeEntryPayload(
     Guid SyncId,
     Guid TaskSyncId,
-    DateTime StartUtc,
-    DateTime? EndUtc,
+    DateTime StartTime,
+    DateTime? EndTime,
+    long? DurationSeconds,
     DateTime CreatedAt,
     DateTime? UpdatedAt,
     int Version,

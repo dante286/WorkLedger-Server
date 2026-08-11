@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     container_name: workledger-postgres-dev
     restart: unless-stopped
     environment:
@@ -10,7 +10,7 @@ services:
     ports:
       - "55432:5432"
     volumes:
-      - workledger-postgres-dev-data:/var/lib/postgresql/data
+      - workledger-postgres-dev-data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U workledger -d workledger"]
       interval: 5s
