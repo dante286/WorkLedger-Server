@@ -77,6 +77,15 @@ Let `incoming` be a `SyncChangeDto` and `existing` the row matched by `(AccountI
   re-pushing produces the same rejection forever, and today's `SyncOrchestrator` leaves anything not in
   `AcceptedSyncQueueIds` pending. Adopting `AuthoritativePayloadJson` *and* dropping the queue row is the
   correct client response; that is WL-94's half of this contract.
+
+  **The winner is self-describing (WL-98).** `SyncItemResult.AuthoritativeOperation` says what the payload is
+  — `"update"` for a live row, `"delete"` for a tombstone — mirroring what a pull would report for the same
+  row, and null whenever there is no payload. The winning row *can* be a tombstone (device C deletes, device B
+  pushes a stale update), the payload DTOs carry no `IsDeleted`, and a client that guessed "update" would
+  resurrect the entity locally and permanently. Nothing later corrects that guess: this branch writes nothing,
+  so the winner's `UpdatedAt` stays behind the client's cursor and an incremental pull never re-delivers it.
+  A null payload with a `Reason` therefore means "your change was invalid"; a payload with an operation means
+  "my row won, here it is".
 - **C. No existing row → insert.** Deserialize `PayloadJson` into the Contracts payload DTO, map to typed
   columns, set `AccountId` from the token, take `Version` / `OriginDeviceId` / `CreatedAt` from the change.
 - **D. Deletes tombstone, and the server bumps the version.** A `"delete"` is accepted when

@@ -235,8 +235,25 @@ public sealed class SyncService(WorkLedgerDbContext db)
     private static SyncItemResult Accepted(SyncChangeDto change, int authoritativeVersion)
         => new(change.EntityId, true, authoritativeVersion, null, null);
 
+    /// <summary>
+    /// The server's row beat the pushed change, so hand the winner back for immediate adoption.
+    /// <para>
+    /// <c>AuthoritativeOperation</c> says what the payload <i>is</i>, mirroring what
+    /// <see cref="ToChangeDto"/> would emit for the same row. `existing` here can be a tombstone —
+    /// device C deletes, device B pushes a stale update, the tombstone wins — and without the flag a
+    /// client adopting the payload can only guess "update", which resurrects the entity locally and
+    /// permanently. Rule E means this branch writes nothing, so the winner's UpdatedAt stays behind
+    /// the client's cursor and no later incremental pull corrects the guess. See WL-98.
+    /// </para>
+    /// </summary>
     private static SyncItemResult ServerWins(ISyncEntityHandler handler, SyncChangeDto change, IVersionedSyncEntity existing)
-        => new(change.EntityId, false, existing.Version, handler.SerializePayload(existing), "Server version wins.");
+        => new(
+            change.EntityId,
+            false,
+            existing.Version,
+            handler.SerializePayload(existing),
+            "Server version wins.",
+            existing.IsDeleted ? SyncOperations.Delete : SyncOperations.Update);
 
     private static SyncItemResult Failed(SyncChangeDto change, int authoritativeVersion, string reason)
         => new(change.EntityId, false, authoritativeVersion, null, reason);
