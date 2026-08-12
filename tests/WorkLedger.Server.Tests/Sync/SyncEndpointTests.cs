@@ -117,8 +117,73 @@ public class SyncEndpointTests(AuthWebAppFixture fixture)
         var authoritative = JsonSerializer.Deserialize<ProjectPayload>(result.AuthoritativePayloadJson!, SyncJson.Options);
         Assert.Equal("Server copy", authoritative!.Name);
 
+        // The payload has to say what it is; the winning row here is alive.
+        Assert.Equal(SyncOperations.Update, result.AuthoritativeOperation);
+
         using var db = fixture.CreateDbContext();
         Assert.Equal("Server copy", (await db.Projects.SingleAsync(p => p.SyncId == syncId)).Name);
+    }
+
+    /// <summary>
+    /// WL-98. The winning row can be a tombstone, and the payload alone cannot say so — the payload
+    /// DTOs carry no IsDeleted. A client that guessed "update" here would resurrect the entity
+    /// locally and permanently, and no later pull would correct it: rule E means this branch writes
+    /// nothing, so the winner's UpdatedAt stays behind the client's cursor.
+    /// </summary>
+    [Fact]
+    public async Task Push_WhenTheWinningRowIsATombstone_SaysSoInAuthoritativeOperation()
+    {
+        var author = await NewDeviceAsync();
+        var rival = await NewDeviceAsync();
+        var syncId = Guid.NewGuid();
+
+        // Author creates then deletes: the tombstone lands at version 2 (the delete's bump).
+        await PushAsync(author, ProjectChange(syncId, author.DeviceId, version: 1, SyncOperations.Create));
+        await PushAsync(author, ProjectChange(syncId, author.DeviceId, version: 1, SyncOperations.Delete));
+
+        // The rival never saw the delete and pushes an update at the tombstone's version.
+        var push = await PushAsync(rival, ProjectChange(syncId, rival.DeviceId, version: 2, name: "Resurrected"));
+
+        var result = push.Results.Single();
+        Assert.False(result.Accepted);
+        Assert.Equal(2, result.AuthoritativeVersion);
+        Assert.NotNull(result.AuthoritativePayloadJson);
+        Assert.Equal(SyncOperations.Delete, result.AuthoritativeOperation);
+
+        using var db = fixture.CreateDbContext();
+        Assert.True((await db.Projects.SingleAsync(p => p.SyncId == syncId)).IsDeleted);
+    }
+
+    [Fact]
+    public async Task Push_WhenAnItemFailsValidation_CarriesNoAuthoritativePayloadOrOperation()
+    {
+        var device = await NewDeviceAsync();
+
+        var push = await PushAsync(
+            device,
+            NewChange("sasquatch", Guid.NewGuid(), SyncOperations.Create, "{}", 1, device.DeviceId));
+
+        var result = push.Results.Single();
+        Assert.False(result.Accepted);
+
+        // A null payload is how the client tells "your change was invalid" apart from "my row won,
+        // here it is" — so the operation must be absent too.
+        Assert.Null(result.AuthoritativePayloadJson);
+        Assert.Null(result.AuthoritativeOperation);
+    }
+
+    [Fact]
+    public async Task Push_WhenAccepted_CarriesNoAuthoritativeOperation()
+    {
+        var device = await NewDeviceAsync();
+
+        var push = await PushAsync(
+            device,
+            ProjectChange(Guid.NewGuid(), device.DeviceId, version: 1, SyncOperations.Create));
+
+        var result = push.Results.Single();
+        Assert.True(result.Accepted);
+        Assert.Null(result.AuthoritativeOperation);
     }
 
     [Fact]
