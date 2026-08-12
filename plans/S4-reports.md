@@ -1,4 +1,4 @@
-# Plan S4 — Reports Endpoints (ticket TBD)
+# Plan S4 — Reports Endpoints — WL-77 (WL-85/86/87)
 
 ## Context
 
@@ -56,6 +56,67 @@ Note the README's endpoint list has a typo (`/reporsts/tasks/{id}`) — use the 
    - Date-range filters on the project/task endpoints clip correctly at the boundaries.
    - CSV output has the documented columns and correct rows for the same seed.
    - A second account's data never appears in the first account's reports (isolation).
+
+## Decisions settled while implementing
+
+The scope above leaves several calls to the implementer ("pick and document"). These are the answers, and
+they are enforced by tests. The full reasoning lives in code comments — `ReportService` holds the counting
+rules, `ReportQuery` the SQL, `ReportCsv` the column layouts.
+
+1. **Running entries are excluded from every total, and counted.** Confirmed against the client:
+   `TimerService` writes `DurationSeconds` only when a timer *stops*, so a running entry has a null
+   `EndTime` **and** a null duration — there is no length to sum. Counting `now − start` would make the
+   same report return a different number every second and would disagree with the client's own weekly
+   rollup, which filters on `EndTime != null` too. Every report DTO therefore carries a `RunningEntries`
+   count, so a caller can say "plus one timer still going" rather than quietly under-reporting.
+
+2. **Duration is the stored `DurationSeconds`, falling back to `EndTime − StartTime`.** The stored column
+   is what the client sums, so using it makes the server agree with the client; the fallback stops a
+   finished row that somehow lacks one from counting as zero.
+
+3. **An entry lands wholly in the UTC day it started.** Matches the client (its rollup filters
+   `entry.StartTime >= weekStart`). An entry spanning midnight is not split — splitting would be more
+   precise but would disagree with the client for no benefit anyone asked for.
+
+4. **Tombstones are excluded along the whole chain**, not just the entry: an entry counts only if it, its
+   task, and that task's project are all alive. An entry whose parent row has not arrived yet does not
+   count either — the joins are inner joins on SyncId. The alternative (an "unattributed" bucket) would
+   mean the account total stopped being the sum of the per-project totals, and the condition is transient
+   anyway, since push applies parents before children.
+
+5. **Ranges are inclusive whole UTC days.** `from`/`to` are `yyyy-MM-dd`; `from=X&to=X` is all of day X.
+   Either end may be omitted and the default is **all-time**. `from > to` is a 400, not an empty report —
+   an empty report reads as "you logged no time then", which is the wrong thing to tell someone who typed
+   the dates backwards.
+
+6. **`weekOf` names a week, not a start date.** Any day in the ISO week resolves to that Monday–Sunday;
+   omitting it means the current UTC week. `Days` is always seven entries, zero-filled, so a caller can
+   chart the week without filling gaps.
+
+7. **404, not an empty 200, for an unknown or tombstoned project/task** — including one belonging to
+   another account, which is how account scope stays unobservable.
+
+8. **CSV columns** — each file is that report's own breakdown flattened, plus the names needed to identify
+   a row once the file is detached from the request:
+   - `/reports/weekly` → `date,project,task,seconds` (the day × project × task grid the JSON's three
+     breakdowns are each folded from, so every one of them is a single pivot away in a spreadsheet)
+   - `/reports/projects/{id}` → `project,task,seconds`
+   - `/reports/tasks/{id}` → `date,project,task,seconds`
+
+   RFC 4180 quoting, CRLF line endings, no row for a day with no time, and no `RunningEntries` — a
+   header-level scalar has no honest column in a table of recorded time.
+
+9. **`?format=csv` or `Accept: text/csv`; the query parameter wins.** A wildcard `Accept: */*` — what most
+   HTTP clients send by default — stays JSON. An unrecognized `format` is a 400 rather than a silent
+   fallback to JSON, which a caller's CSV parser would report as a corrupt file.
+
+10. **Aggregation is one raw-SQL `GROUP BY` at (UTC day × task) grain**, the finest any of the three
+    reports needs; the other views are folded from it in memory over a result set bounded by days × tasks.
+    Raw SQL rather than EF `GroupBy` for two reasons the plan anticipated: the columns are `timestamptz`,
+    where LINQ's date-truncation translations run through the *session's* TimeZone (making day boundaries
+    depend on server configuration — `AT TIME ZONE 'UTC'` here cannot drift), and the joins are on
+    (AccountId, SyncId) pairs with no EF navigation properties, because S1 deliberately declares none.
+    The `TimeEntries` table is summed in Postgres and never materialized.
 
 ## Out of scope
 
