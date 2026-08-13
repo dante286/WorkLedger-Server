@@ -27,11 +27,11 @@ come.
    docker compose -f docker-compose.dev.yml up -d
    ```
 
-   This brings up Postgres on `localhost:55432` (non-default port, to avoid clashing with any existing local
-   Postgres). Connection string for local dev:
+   This brings up Postgres on `localhost:15432` (non-default port, to avoid clashing with any existing local
+   Postgres; 5433 is reserved for a future TLS listener). Connection string for local dev:
 
    ```
-   Host=localhost;Port=55432;Database=workledger;Username=workledger;Password=workledger
+   Host=localhost;Port=15432;Database=workledger;Username=workledger;Password=workledger
    ```
 
 2. Set the auth secrets (never hardcoded — the app fails fast at startup if these are missing):

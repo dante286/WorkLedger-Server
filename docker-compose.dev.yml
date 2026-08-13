@@ -8,7 +8,7 @@ services:
       POSTGRES_PASSWORD: workledger
       POSTGRES_DB: workledger
     ports:
-      - "55432:5432"
+      - "15432:5432"
     volumes:
       - workledger-postgres-dev-data:/var/lib/postgresql
     healthcheck:

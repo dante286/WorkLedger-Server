@@ -20,7 +20,7 @@ public sealed class WorkLedgerDbContextFactory : IDesignTimeDbContextFactory<Wor
             .Build();
 
         var connectionString = configuration.GetConnectionString("Postgres")
-            ?? "Host=localhost;Port=55432;Database=workledger;Username=workledger;Password=workledger";
+            ?? "Host=localhost;Port=15432;Database=workledger;Username=workledger;Password=workledger";
 
         var optionsBuilder = new DbContextOptionsBuilder<WorkLedgerDbContext>();
         optionsBuilder.UseNpgsql(connectionString);
