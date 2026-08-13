@@ -8,7 +8,8 @@
       "applicationUrl": "http://localhost:5284",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
-        "Jwt__SigningKey": "your-signing-key-here"
+        "Jwt__SigningKey": "your-signing-key-here",
+        "Bootstrap__Secret": "your-bootstrap-secret-here"
       }
     },
     "https": {
@@ -18,7 +19,8 @@
       "applicationUrl": "https://localhost:7131;http://localhost:5284",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
-        "Jwt__SigningKey": "your-signing-key-here"
+        "Jwt__SigningKey": "your-signing-key-here",
+        "Bootstrap__Secret": "your-bootstrap-secret-here"
       }
     }
   }
