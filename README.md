@@ -5,8 +5,9 @@ auth (from S2), xUnit + Testcontainers, Docker Compose.
 
 This is a separate repository from `WorkLedger-Client`. The two meet only at `WorkLedger.Contracts` — see
 `plans/README.md` for the cross-repo contract handoff and the full build-plan sequence (S0–S5). This README
-covers what S0 and S1 built: the solution scaffold, the `/health` endpoint, and the EF Core data model/
-migrations. It will expand as later plans land.
+covers what S0–S4 built: the solution scaffold and `/health`, the EF Core data model and migrations, JWT
+device bootstrap, the `/sync` push/pull endpoints, and the `/reports` rollups. Deployment (S5) is still to
+come.
 
 ## Stack
 
@@ -26,11 +27,11 @@ migrations. It will expand as later plans land.
    docker compose -f docker-compose.dev.yml up -d
    ```
 
-   This brings up Postgres on `localhost:55432` (non-default port, to avoid clashing with any existing local
-   Postgres). Connection string for local dev:
+   This brings up Postgres on `localhost:15432` (non-default port, to avoid clashing with any existing local
+   Postgres; 5433 is reserved for a future TLS listener). Connection string for local dev:
 
    ```
-   Host=localhost;Port=55432;Database=workledger;Username=workledger;Password=workledger
+   Host=localhost;Port=15432;Database=workledger;Username=workledger;Password=workledger
    ```
 
 2. Set the auth secrets (never hardcoded — the app fails fast at startup if these are missing):
@@ -62,14 +63,64 @@ migrations. It will expand as later plans land.
      `{ "accountId": 1, "deviceId": "<the GUID you sent>" }`. Every other endpoint requires that same
      `Authorization` header (401 without it).
 
+## Reports
+
+Three read-only, account-scoped endpoints (S4). They are the **authoritative cross-device rollup**: once
+several devices sync into one account, only the server holds the merged picture. The client's own Reports tab
+computes its local view separately and does not consume these.
+
+```
+GET /reports/weekly?weekOf=<yyyy-MM-dd>
+GET /reports/projects/{projectSyncId}?from=<yyyy-MM-dd>&to=<yyyy-MM-dd>
+GET /reports/tasks/{taskSyncId}?from=<yyyy-MM-dd>&to=<yyyy-MM-dd>
+```
+
+All three take `Authorization: Bearer <token>` and report on **that token's account** — nothing in a URL can
+widen the scope. Ids in routes are cross-device **SyncIds** (Guid), never the server's internal int Ids. An
+unknown or deleted project/task is a 404, which is also the answer for one belonging to another account.
+
+**Parameters.** `weekOf` names a week, not a start date: any day in the ISO week resolves to that
+Monday–Sunday, and omitting it means the current UTC week. `from`/`to` are **inclusive whole UTC days**, so
+`from=2026-03-02&to=2026-03-02` is that entire day; either may be omitted and the default is all-time.
+`from > to` is a 400, not an empty report. Everything is UTC; the caller localizes.
+
+**What counts.** A time entry contributes only if it, its task, and that task's project are all alive
+(tombstoned rows are excluded along the whole chain) and it has an `EndTime`. Its length is the stored
+`DurationSeconds`, falling back to `EndTime − StartTime`. It lands wholly in the UTC day it *started*, so an
+entry spanning midnight is not split — the same rule the client's own rollup uses. Entries still running have
+no fixed length and are excluded from every total, but each report carries a `runningEntries` count so a
+caller can say "plus one timer still going" instead of silently under-reporting.
+
+The weekly report's `days` array always has seven entries, zero-filled, so it can be charted directly; its
+account total, per-project, per-task and per-day views are all folded from one aggregation and cannot
+disagree.
+
+**CSV export.** Add `?format=csv` (or send `Accept: text/csv` — the query parameter wins, and a wildcard
+`*/*` stays JSON) to get an RFC 4180 download instead. An unrecognized `format` is a 400. Columns:
+
+| Endpoint | Columns |
+|---|---|
+| `/reports/weekly` | `date,project,task,seconds` |
+| `/reports/projects/{id}` | `project,task,seconds` |
+| `/reports/tasks/{id}` | `date,project,task,seconds` |
+
+The weekly file is the (day × project × task) grid the JSON's three breakdowns are each folded from, so every
+one of them is a single pivot away in a spreadsheet. Days with no time have no row, and `runningEntries` is
+JSON-only — a header-level scalar has no honest column in a table of recorded time.
+
+Response DTOs live in `src/WorkLedger.Contracts/Reports/ReportDtos.cs`; the counting rules are stated once, in
+full, on `ReportService`.
+
 ## Testing
 
 ```
 dotnet test WorkLedger-Server.slnx
 ```
 
-Runs the `/health` integration test, the EF Core data-layer tests, and the auth tests (device bootstrap,
-JWT issuance/validation, 401s). Tests do not depend on `docker-compose.dev.yml` or any real secrets — the
+Runs the `/health` integration test, the EF Core data-layer tests, the auth tests (device bootstrap, JWT
+issuance/validation, 401s), the sync reconciliation tests, and the report tests (hand-computed weekly totals,
+tombstone exclusion, date-range clipping, CSV columns, cross-account isolation). Tests do not depend on
+`docker-compose.dev.yml` or any real secrets — the
 data-layer and auth tests each spin up their own disposable Postgres via Testcontainers, the auth tests supply
 throwaway `Jwt:SigningKey`/`Bootstrap:Secret` values via `WebApplicationFactory` config overrides (see
 `tests/WorkLedger.Server.Tests/TestConfig.cs`), and the `/health` test disables `Database:MigrateOnStartup` so

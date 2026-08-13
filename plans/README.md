@@ -18,8 +18,8 @@ only at `WorkLedger.Contracts` (see S0).
 | S0 | [S0-scaffold-and-contracts.md](S0-scaffold-and-contracts.md) | TBD | — |
 | S1 | [S1-persistence-and-datamodel.md](S1-persistence-and-datamodel.md) | TBD | S0 |
 | S2 | [S2-auth.md](S2-auth.md) | WL-75 (done) | S1 |
-| S3 | [S3-sync-endpoints.md](S3-sync-endpoints.md) | WL-76 (WL-82/83/84) | S1, S2 |
-| S4 | [S4-reports.md](S4-reports.md) | WL-77 | S1 (parallel with S3) |
+| S3 | [S3-sync-endpoints.md](S3-sync-endpoints.md) | WL-76 (WL-82/83/84) (done) | S1, S2 |
+| S4 | [S4-reports.md](S4-reports.md) | WL-77 (WL-85/86/87) (done) | S1, S2 |
 | S5 | [S5-deployment-and-docs.md](S5-deployment-and-docs.md) | WL-78 | S3, S4 |
 
 > **Ticket numbers:** like the client plans, these use `Sn` as plan IDs with tickets left **TBD** — create each
@@ -31,8 +31,10 @@ only at `WorkLedger.Contracts` (see S0).
 
 - **S0 → S1 → S2** run first, in order. S1 (data model) and S2 (auth) are both prerequisites for the sync
   endpoints.
-- **S3 (sync) and S4 (reports) can run in parallel** once S1 lands — S3 needs S2 (auth) as well; S4 only needs
-  the data model. If reporting matters more for a near-term demo, S4 can be pulled forward.
+- **S3 (sync) and S4 (reports) can run in parallel** once S1 and S2 land — S4 reads only the data model, but
+  its endpoints are account-scoped off the caller's token, so it needs auth too (the table above says S1, S2;
+  the "S4 only needs the data model" reading was wrong and is corrected here). If reporting matters more for
+  a near-term demo, S4 can be pulled forward.
 - **S5** (deployment + docs) depends on S3 and S4 being mergeable; the release tag depends on everything.
 
 ## Cross-repo contract handoff (important)

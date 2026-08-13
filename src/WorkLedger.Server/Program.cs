@@ -9,6 +9,7 @@ using WorkLedger.Contracts.Auth;
 using WorkLedger.Server.Auth;
 using WorkLedger.Server.Data;
 using WorkLedger.Server.Data.Entities;
+using WorkLedger.Server.Reports;
 using WorkLedger.Server.Sync;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -72,6 +73,7 @@ builder.Services.AddSingleton<JwtTokenService>();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentContext, CurrentContext>();
 builder.Services.AddScoped<SyncService>();
+builder.Services.AddScoped<ReportService>();
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer();
@@ -185,6 +187,7 @@ app.MapGet("/auth/whoami", (ICurrentContext currentContext) =>
     Results.Ok(new WhoAmIResponse(currentContext.AccountId, currentContext.DeviceId)));
 
 app.MapSyncEndpoints();
+app.MapReportEndpoints();
 
 app.Run();
 

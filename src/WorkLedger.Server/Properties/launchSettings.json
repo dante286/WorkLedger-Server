@@ -7,7 +7,9 @@
       "launchBrowser": true,
       "applicationUrl": "http://localhost:5284",
       "environmentVariables": {
-        "ASPNETCORE_ENVIRONMENT": "Development"
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "Jwt__SigningKey": "your-signing-key-here-keep-it-secret-keep-it-safe",
+        "Bootstrap__Secret": "your-bootstrap-secret-here-keep-it-secret-keep-it-safe"
       }
     },
     "https": {
@@ -16,7 +18,9 @@
       "launchBrowser": true,
       "applicationUrl": "https://localhost:7131;http://localhost:5284",
       "environmentVariables": {
-        "ASPNETCORE_ENVIRONMENT": "Development"
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "Jwt__SigningKey": "your-signing-key-here-keep-it-secret-keep-it-safe",
+        "Bootstrap__Secret": "your-bootstrap-secret-here-keep-it-secret-keep-it-safe"
       }
     }
   }
