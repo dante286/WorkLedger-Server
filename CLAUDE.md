@@ -1,0 +1,169 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Commands
+
+```powershell
+# Dev Postgres (required before running the app — it migrates on boot)
+docker compose -f docker-compose.dev.yml up -d      # localhost:15432, workledger/workledger
+
+# Secrets must be set or the app refuses to start (Program.cs fails fast).
+# `dotnet run` picks these up from Properties/launchSettings.json; set them explicitly otherwise.
+$env:Jwt__SigningKey = "<>= 32 bytes>"
+$env:Bootstrap__Secret = "<any>"
+
+dotnet build WorkLedger-Server.slnx
+dotnet run --project src/WorkLedger.Server                 # http://localhost:5284
+dotnet test  WorkLedger-Server.slnx
+
+# Production stack (distinct from the dev compose above: own port, own volume, API in a container)
+cp .env.example .env                                       # then fill in the three required secrets
+docker compose up -d                                       # postgres -> healthy -> api migrates -> serves
+pwsh ./scripts/smoke-test.ps1                               # end-to-end: register, push, pull, report
+
+# One test / one class
+dotnet test WorkLedger-Server.slnx --filter "FullyQualifiedName~ReportEndpointTests"
+dotnet test WorkLedger-Server.slnx --filter "FullyQualifiedName~SyncEndpointTests.Push_HigherVersion_Overwrites"
+
+# Migrations — run from src/WorkLedger.Server/ (a design-time factory means no running app needed)
+dotnet ef migrations add <Name> -o Data/Migrations
+dotnet ef database update
+```
+
+Tests need a working Docker daemon: the data/auth/sync/report tests each spin up their own
+`Testcontainers.PostgreSql` container. They never touch `docker-compose.dev.yml` or real secrets. The
+`/health` test overrides `Database:MigrateOnStartup=false` so it needs no database at all.
+
+## Architecture
+
+Three projects (`WorkLedger-Server.slnx`), .NET 10, Minimal APIs, EF Core + Npgsql:
+
+- **`src/WorkLedger.Contracts`** — dependency-free (no ASP.NET, no EF) class library holding the wire
+  DTOs. It is the source of truth for the contract with the client repo (see *Cross-repo* below). Keep it
+  free of server-only packages: the client compiles these same files.
+- **`src/WorkLedger.Server`** — everything wired in `Program.cs` (no controllers): DI, JWT bearer, a
+  `FallbackPolicy` that makes every endpoint authenticated unless it opts out with `.AllowAnonymous()`
+  (`/`, `/health`, `/auth/register-device`), then `MapSyncEndpoints()` / `MapReportEndpoints()`.
+- **`tests/WorkLedger.Server.Tests`** — xUnit, `WebApplicationFactory<Program>` + Testcontainers.
+
+`plans/` holds the S0–S5 build plans (all shipped) and is the design record —
+`plans/README.md` explains the cross-repo contract handoff and house style.
+
+### Deployment (`Dockerfile`, `docker-compose.yml`)
+
+S5. `README.md` is the operator doc — env vars, backups, TLS, troubleshooting — and is the place to
+document deployment behaviour rather than here. Three things that bite when editing these:
+
+- The runtime image is Alpine, so .NET runs **invariant-globalization**. Every culture-sensitive parse is
+  already pinned to `InvariantCulture` (`ReportRange`, `SyncTime`); adding one that isn't would only fail
+  in the container. Alpine also supplies the busybox `wget` that `HEALTHCHECK` uses.
+- All config resolution for the database goes through `PostgresConnection`, and a **blank** value counts
+  as unset — compose renders an unset optional override as `""`. `Program.cs` resolves `JwtOptions`,
+  `BootstrapOptions` and `PostgresConnection` eagerly right after `Build()` so misconfiguration exits the
+  container naming the key instead of 500ing on a device's first sync.
+- `scripts/smoke-test.ps1` is the only test that exercises the deployment (image, compose wiring,
+  migrate-on-boot, a container-minted token). It writes real rows and does not clean up.
+
+### Tenancy: AccountId always comes from the token
+
+v1 is single-account/multi-device: one seeded `Account` row, many `Device` rows. `ICurrentContext`
+reads `account_id`/`device_id` from JWT claims; **nothing in a request body or URL may widen scope**.
+Every sync and report query filters on `AccountId`. Ids exposed in routes and payloads are cross-device
+`SyncId` Guids, never the server's internal `int Id` — a route with an unknown or other-account SyncId
+is a 404.
+
+### Sync (`src/WorkLedger.Server/Sync/`)
+
+`/sync/push` and `/sync/pull` implement last-write-wins reconciliation. **The merge rules are stated
+once, in full, in the XML doc comment on `SyncService` (rules A–F), and are mirrored by the client and
+by `plans/S3-sync-endpoints.md`. Read that comment before touching merge behaviour, and change all
+three together.** Rules that look like bugs but are not:
+
+- Deletes are accepted at `>=` (not `>`) and stored at `existing.Version + 1` — forced by client
+  behaviour (WL-93). This is the one deliberate deviation from strict LWW.
+- Replays are accepted *no-ops with no EF write at all*. `WorkLedgerDbContext.StampUpdatedAt()` stamps
+  `UpdatedAt` on every modified synced row, and `UpdatedAt` is the pull cursor — an incidental write
+  re-broadcasts the row to every other device.
+- Push results are **positional** (one per input change, in request order), because one batch can carry
+  create → update → delete for the same entity.
+- A batch is applied parents-first (project → task → time entry via `ISyncEntityHandler.OrderRank`) but
+  answered in request order; `SaveChangesAsync` runs per item inside one transaction so a later change
+  can see an earlier one.
+
+`SyncService` is entity-agnostic; all per-type knowledge lives in the `SyncEntityHandlers.ByEntityType`
+registry in `SyncEntityHandler.cs` — add a synced entity there, not by branching in the merge loop.
+
+Wire-format landmines: `SyncEntityTypes`/`SyncOperations` string values are fixed by what the client has
+already written into its local queue and must not be renamed. `SyncJson.Options` deliberately emits
+**PascalCase** — the client deserializes with default case-sensitive options, so switching to web/camelCase
+defaults silently produces all-default entities instead of throwing. All timestamps cross the boundary
+through `SyncTime.ToUtc` (columns are `timestamptz`; Npgsql throws on non-UTC `DateTimeKind`, and the
+client's SQLite values arrive as `Unspecified`).
+
+### Reports (`src/WorkLedger.Server/Reports/`)
+
+Read-only rollups over the same data — the authoritative *cross-device* view (the client computes its own
+local one separately and does not consume these). Counting rules live in one place: the XML doc on
+`ReportService` (rules 1–6), with `ReportQuery` as their SQL form. Summary: tombstones exclude the whole
+entry→task→project chain; unresolvable parents don't count; running entries (`EndTime == null`) are
+excluded but reported as a `runningEntries` count; length is stored `DurationSeconds` falling back to
+`EndTime − StartTime`; an entry lands wholly in the UTC day it started. `?format=csv` (or an explicit
+`Accept: text/csv`; the query param wins, `*/*` stays JSON) returns RFC 4180; an unrecognized `format`
+is a 400.
+
+## Cross-repo: the client at `E:\GitHub-Repos\WorkLedger-Client`
+
+The client is a local sibling repo — **read it** when touching anything on the wire. It's an Avalonia
+(.NET 10) offline-first desktop app on SQLite; the pieces that talk to this server are
+`Sync/ApiSyncProvider.cs`, `Services/SyncOrchestrator.cs`, `Services/LocalDbService.cs`, and
+`Models/SyncQueue.cs`. Its own `CLAUDE.md` is **out of date on sync** (it still describes a planned FastAPI
+backend and empty `Sync/` placeholders) — trust the client's code and `Sync/Contracts/README.md` over it.
+
+### The contract is vendored, not packaged
+
+This repo publishes no NuGet package, so the client keeps a **byte-identical copy** of
+`src/WorkLedger.Contracts/` at `Sync/Contracts/`, with the source commit recorded in
+`Sync/Contracts/README.md`. A cross-repo `ProjectReference` was rejected (client CI checks out only its
+own repo). Consequences:
+
+- **Changing `WorkLedger.Contracts` is a two-repo change.** The copy must be re-taken and the provenance
+  commit in the client's `Sync/Contracts/README.md` bumped, or the two sides drift silently — the exact
+  failure the shared-C#-types design exists to prevent.
+- The client's `Tests/WorkLedger.Tests/SyncContractGuardTests.cs` only guards the vendored copy against
+  the *client's* own constants and payload shapes. Nothing automatically detects that the copy has fallen
+  behind this repo.
+- **Known drift as of this writing:** the copy is pinned at server commit `3e6e955`; since then this repo
+  added `SyncItemResult.AuthoritativeOperation` (WL-98) and `Reports/ReportDtos.cs`, neither of which the
+  client has. Re-check with `git log --oneline <pinned-commit>..HEAD -- src/WorkLedger.Contracts`.
+
+### Server comments that may have gone stale
+
+Several XML docs here describe client gaps and name the ticket that would close them. Some have since
+landed on client `main` — **verify against the client repo before treating them as current, and before
+"fixing" server code that is accommodating them:**
+
+- **WL-91** (parent SyncIds) — the `validate:` messages in `SyncEntityHandler.cs` say the client doesn't
+  carry `ProjectSyncId`/`TaskSyncId`. It now does (`Models/TaskItem.cs`, `Models/TimeEntry.cs`).
+- **WL-93** (delete version bump) — `SyncService` rule D says the `>=` delete accommodation "can be
+  reverted to a plain `>` once WL-93 ships". It has shipped (`LocalDbService.StampForDelete`). Reverting
+  is still a breaking change for any client build older than that, so it's a decision, not a cleanup.
+- **WL-94 / WL-98** — the client half is implemented in `ApiSyncProvider.MapPushResults` (positional
+  zip, `Accepted == false` treated as final, `RequiresFullPull` on a server win).
+
+`ApiSyncProvider`'s header comment lists the server behaviours it depends on — positional results,
+tombstones coming back at a *higher* version, and "accepted" not implying the server wrote anything.
+Breaking any of those breaks the client silently.
+
+Per `plans/README.md`, server work does **not** modify the client repo — read it, coordinate changes, but
+land client edits as their own client-repo work.
+
+## Conventions
+
+- Non-obvious decisions are documented as XML doc comments on the type that owns the rule, with the
+  reasoning and the cross-repo ticket (WL-##) that forces it. Follow that pattern rather than adding
+  inline `//` notes or a separate doc.
+- Conventional Commits (`feat:` minor, `fix:` patch, `chore:`/`docs:`/`refactor:` no bump). One branch
+  and one PR per plan, off `main`. `.github/pull_request_template.md` expects a test plan of what was
+  actually run.
+- Read the client repo freely; don't commit to it as part of server work (see *Cross-repo* above).
