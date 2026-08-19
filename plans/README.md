@@ -20,7 +20,7 @@ only at `WorkLedger.Contracts` (see S0).
 | S2 | [S2-auth.md](S2-auth.md) | WL-75 (done) | S1 |
 | S3 | [S3-sync-endpoints.md](S3-sync-endpoints.md) | WL-76 (WL-82/83/84) (done) | S1, S2 |
 | S4 | [S4-reports.md](S4-reports.md) | WL-77 (WL-85/86/87) (done) | S1, S2 |
-| S5 | [S5-deployment-and-docs.md](S5-deployment-and-docs.md) | WL-78 | S3, S4 |
+| S5 | [S5-deployment-and-docs.md](S5-deployment-and-docs.md) | WL-78 (done) | S3, S4 |
 
 > **Ticket numbers:** like the client plans, these use `Sn` as plan IDs with tickets left **TBD** — create each
 > fresh in Jira (project `WL`, cloud ID `ea0603f1-23bf-48c8-b2f9-f77728f8eb23`) when you pick it up, and it'll
