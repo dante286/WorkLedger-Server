@@ -12,7 +12,7 @@ public class HealthEndpointTests(WebApplicationFactory<Program> factory) : IClas
     {
         // /health doesn't touch the database — skip the startup migration so this test doesn't
         // need a real Postgres. DB-backed behavior is covered by the Testcontainers fixture.
-        var settings = TestConfig.RequiredAuthSettings();
+        var settings = TestConfig.RequiredStartupSettings();
         settings["Database:MigrateOnStartup"] = "false";
 
         var client = factory

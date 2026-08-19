@@ -1,0 +1,72 @@
+# Production stack: the API plus its Postgres, on one host. This is the deployment target — a solo
+# user or small team running WorkLedger on a homelab box or a small VPS. `docker-compose.dev.yml` is
+# the unrelated dev-only file: it brings up Postgres alone, on a different port and a different
+# volume, for `dotnet run` on the host.
+#
+# All configuration comes from `.env` (copy `.env.example`). Nothing here has a usable default for a
+# secret: the `:?` interpolations below fail the `up` with a named variable rather than booting an
+# API that anyone can register a device against.
+
+name: workledger
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-workledger}
+      POSTGRES_USER: ${POSTGRES_USER:-workledger}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (copy .env.example)}
+    volumes:
+      # The durable data. postgres:18 keeps PGDATA under /var/lib/postgresql/18/docker, so the mount
+      # is the parent directory — matching docker-compose.dev.yml. This volume IS the deployment's
+      # state; see the backup section of README.md before deleting anything.
+      - workledger-postgres-data:/var/lib/postgresql
+    # Deliberately no published port: only the api container needs Postgres, and exposing 5432 on a
+    # VPS is how self-hosted databases get found. Uncomment to run psql from the host.
+    # ports:
+    #   - "15433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-workledger} -d ${POSTGRES_DB:-workledger}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  api:
+    # `docker compose up --build` builds this locally; plain `up` pulls the tag if it exists. CI
+    # publishes the same image to GHCR on a version tag (.github/workflows/release.yml).
+    image: ghcr.io/dante286/workledger-api:${WORKLEDGER_VERSION:-latest}
+    build:
+      context: .
+      args:
+        VERSION: ${WORKLEDGER_VERSION:-0.0.0-dev}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        # Not just `depends_on: [postgres]` — that waits for the container to start, not for Postgres
+        # to accept connections. The API migrates on boot (Database:MigrateOnStartup), so on a cold
+        # `up` it would race initdb and fail its first start.
+        condition: service_healthy
+    environment:
+      # The server builds its connection string from these when ConnectionStrings__Postgres is unset,
+      # so the password lives in exactly one place in .env instead of being duplicated into a DSN.
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-workledger}
+      POSTGRES_USER: ${POSTGRES_USER:-workledger}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (copy .env.example)}
+      # Escape hatch for an external/managed Postgres: set the full connection string in .env and it
+      # wins over the four variables above. Blank (the default here) counts as unset.
+      ConnectionStrings__Postgres: ${ConnectionStrings__Postgres:-}
+      Jwt__SigningKey: ${Jwt__SigningKey:?set Jwt__SigningKey in .env (>= 32 bytes; copy .env.example)}
+      Jwt__ExpiryDays: ${Jwt__ExpiryDays:-365}
+      Bootstrap__Secret: ${Bootstrap__Secret:?set Bootstrap__Secret in .env (copy .env.example)}
+      Account__Name: ${Account__Name:-Default}
+    ports:
+      # Host-side port only. Bind to 127.0.0.1 (API_BIND=127.0.0.1) when a reverse proxy on the same
+      # host terminates TLS — see "Putting it behind TLS" in README.md.
+      - "${API_BIND:-0.0.0.0}:${API_PORT:-8080}:8080"
+
+volumes:
+  workledger-postgres-data:

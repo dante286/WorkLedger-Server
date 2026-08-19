@@ -1,0 +1,25 @@
+# Build context = repo root (the Dockerfile restores from both src/ projects), so keep everything
+# that isn't source out of it: it all invalidates layer cache, and bin/obj from a Windows host would
+# be copied over the Linux build's own output.
+**/bin/
+**/obj/
+**/.vs/
+**/.vscode/
+**/.idea/
+.git/
+.github/
+.claude/
+tests/
+plans/
+scripts/
+*.md
+.env
+.env.*
+!.env.example
+docker-compose*.yml
+Dockerfile
+.dockerignore
+.gitignore
+*.slnx
+*.user
+*.log

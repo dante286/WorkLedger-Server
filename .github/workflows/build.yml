@@ -23,3 +23,20 @@ jobs:
 
       - name: Test
         run: dotnet test WorkLedger-Server.slnx --configuration Release --no-build
+
+  # The image is only pushed on a tag (release.yml), but it is built here too: a Dockerfile that stopped
+  # building would otherwise not be noticed until release day.
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the production image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

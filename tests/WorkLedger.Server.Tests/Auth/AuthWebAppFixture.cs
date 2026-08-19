@@ -27,7 +27,7 @@ public sealed class AuthWebAppFixture : IAsyncLifetime
     {
         await _container.StartAsync();
 
-        var settings = TestConfig.RequiredAuthSettings();
+        var settings = TestConfig.RequiredStartupSettings();
         settings["ConnectionStrings:Postgres"] = _container.GetConnectionString();
         settings["Database:MigrateOnStartup"] = "true";
 

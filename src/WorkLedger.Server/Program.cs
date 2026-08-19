@@ -27,16 +27,10 @@ builder.Logging.AddSimpleConsole(options =>
 // Build()), and the fail-fast checks are forced to run right after Build() (see below) so
 // misconfiguration is still caught at startup, not on the first request.
 
+builder.Services.AddSingleton(sp => PostgresConnection.Resolve(sp.GetRequiredService<IConfiguration>()));
+
 builder.Services.AddDbContext<WorkLedgerDbContext>((sp, options) =>
-{
-    var configuration = sp.GetRequiredService<IConfiguration>();
-    var connectionString = configuration.GetConnectionString("Postgres")
-        ?? BuildConnectionStringFromPostgresEnv(configuration)
-        ?? throw new InvalidOperationException(
-            "No Postgres connection string configured. Set ConnectionStrings:Postgres (or ConnectionStrings__Postgres " +
-            "as an env var), or set POSTGRES_HOST/POSTGRES_DB/POSTGRES_USER/POSTGRES_PASSWORD.");
-    options.UseNpgsql(connectionString);
-});
+    options.UseNpgsql(sp.GetRequiredService<PostgresConnection>().ConnectionString));
 
 builder.Services.AddSingleton(sp =>
 {
@@ -104,12 +98,15 @@ builder.Services.AddAuthorization(options =>
 
 var app = builder.Build();
 
-// Force eager resolution so a missing signing key/bootstrap secret fails startup immediately
-// rather than lazily on the first request that happens to need them.
+// Force eager resolution so missing critical config — signing key, bootstrap secret, connection
+// string — fails startup immediately rather than lazily on the first request that happens to need it.
+// A container that exits naming a configuration key is diagnosable from `docker compose logs`; one that
+// starts and then 500s on a device's first sync is not.
 using (var validationScope = app.Services.CreateScope())
 {
     validationScope.ServiceProvider.GetRequiredService<JwtOptions>();
     validationScope.ServiceProvider.GetRequiredService<BootstrapOptions>();
+    validationScope.ServiceProvider.GetRequiredService<PostgresConnection>();
 }
 
 if (app.Configuration.GetValue("Database:MigrateOnStartup", true))
@@ -121,6 +118,9 @@ if (app.Configuration.GetValue("Database:MigrateOnStartup", true))
     await SeedV1AccountAsync(db, accountName);
 }
 
+// Method, path and status only. Request.Path excludes the query string and no header is logged, which
+// is what keeps bearer tokens and the X-Bootstrap-Secret out of the log — every secret this API accepts
+// arrives in a header, so widening this line to headers or full URLs would start recording them.
 app.Use(async (context, next) =>
 {
     var logger = context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("RequestLog");
@@ -128,6 +128,10 @@ app.Use(async (context, next) =>
     logger.LogInformation("{Method} {Path} -> {StatusCode}", context.Request.Method, context.Request.Path, context.Response.StatusCode);
 });
 
+// No CORS policy, deliberately. The only client is the Avalonia desktop app, which calls over
+// HttpClient and is not a browser origin, so CORS would never be consulted; a permissive policy added
+// "just in case" would only hand every page on the internet the ability to drive this API with a token
+// it managed to read. A future browser client is an explicit decision, not something left already open.
 app.UseAuthentication();
 app.UseAuthorization();
 
@@ -201,22 +205,6 @@ static async Task SeedV1AccountAsync(WorkLedgerDbContext db, string accountName)
         db.Accounts.Add(new Account { Name = accountName });
         await db.SaveChangesAsync();
     }
-}
-
-static string? BuildConnectionStringFromPostgresEnv(IConfiguration configuration)
-{
-    var host = configuration["POSTGRES_HOST"];
-    var db = configuration["POSTGRES_DB"];
-    var user = configuration["POSTGRES_USER"];
-    var password = configuration["POSTGRES_PASSWORD"];
-
-    if (string.IsNullOrEmpty(host) || string.IsNullOrEmpty(db) || string.IsNullOrEmpty(user) || string.IsNullOrEmpty(password))
-    {
-        return null;
-    }
-
-    var port = configuration["POSTGRES_PORT"] ?? "5432";
-    return $"Host={host};Port={port};Database={db};Username={user};Password={password}";
 }
 
 public partial class Program;
