@@ -21,6 +21,16 @@ only at `WorkLedger.Contracts` (see S0).
 | S3 | [S3-sync-endpoints.md](S3-sync-endpoints.md) | WL-76 (WL-82/83/84) (done) | S1, S2 |
 | S4 | [S4-reports.md](S4-reports.md) | WL-77 (WL-85/86/87) (done) | S1, S2 |
 | S5 | [S5-deployment-and-docs.md](S5-deployment-and-docs.md) | WL-78 (done) | S3, S4 |
+| S6 | [S6-user-accounts-and-registration.md](S6-user-accounts-and-registration.md) | TBD | S5 |
+| S7 | [S7-login-and-device-enrollment.md](S7-login-and-device-enrollment.md) | TBD | S6 |
+| S8 | [S8-account-deletion-and-device-management.md](S8-account-deletion-and-device-management.md) | TBD | S7 |
+| S9 | [S9-user-accounts-cutover.md](S9-user-accounts-cutover.md) | TBD | S6, S7, S8 |
+
+**S6–S9 are one release: user accounts.** S2 built auth for a single seeded account with devices enrolled by a
+shared secret, and named per-user accounts as the deferred follow-up. S6–S9 are that follow-up — a **user
+account becomes the tenancy root** (`Account` is renamed to `User` and gains email/password credentials), one
+user owns many devices, and each device syncs into that user's rows. It is a breaking change on the wire, so
+it lands as one release with a documented upgrade path (`POST /auth/claim`, then every device logs in again).
 
 > **Ticket numbers:** like the client plans, these use `Sn` as plan IDs with tickets left **TBD** — create each
 > fresh in Jira (project `WL`, cloud ID `ea0603f1-23bf-48c8-b2f9-f77728f8eb23`) when you pick it up, and it'll
@@ -36,6 +46,13 @@ only at `WorkLedger.Contracts` (see S0).
   the "S4 only needs the data model" reading was wrong and is corrected here). If reporting matters more for
   a near-term demo, S4 can be pulled forward.
 - **S5** (deployment + docs) depends on S3 and S4 being mergeable; the release tag depends on everything.
+- **S6 → S7 → S8 are strictly linear**, and each leaves `main` shippable: S6 renames the tenancy root and adds
+  registration while keeping `/auth/register-device` as the token source, S7 replaces it with login and adds
+  the security-stamp revocation, S8 spends that mechanism on device management and account deletion. Don't
+  parallelise them — they touch the same entity, the same claims and overlapping migrations.
+- **S9 runs last** and only after all three: it re-vendors the settled contract to the client, rewrites the
+  operator docs and deployment config, reworks the smoke test, and produces the client handoff. Re-vendoring
+  after each of S6–S8 would mean three client PRs chasing a moving contract.
 
 ## Cross-repo contract handoff (important)
 
