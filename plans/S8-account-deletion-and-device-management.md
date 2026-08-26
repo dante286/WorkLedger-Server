@@ -1,4 +1,7 @@
-# Plan S8 — Account deletion, device management, logout-all (ticket TBD)
+# Plan S8 — Account deletion, device management, logout-all (WL-108)
+
+**Tickets:** [WL-108](https://mnisan.atlassian.net/browse/WL-108), under epic [WL-104](https://mnisan.atlassian.net/browse/WL-104) (*User accounts: user-owned tenancy, login, and device management (server)*).
+Subtasks: scope 1 → WL-121, 2 → WL-122, 3 → WL-123, 4–5 → WL-124, 6 (tests) → WL-125. The client-side work this release implies is tracked separately under epic [WL-105](https://mnisan.atlassian.net/browse/WL-105).
 
 ## Context
 

@@ -1,4 +1,7 @@
-# Plan S7 — Login, device enrollment under a user, and token revocation (ticket TBD)
+# Plan S7 — Login, device enrollment under a user, and token revocation (WL-107)
+
+**Tickets:** [WL-107](https://mnisan.atlassian.net/browse/WL-107), under epic [WL-104](https://mnisan.atlassian.net/browse/WL-104) (*User accounts: user-owned tenancy, login, and device management (server)*).
+Subtasks: scope 1–2 → WL-116, 3 → WL-117, 4 → WL-118, 5–6 → WL-119, 7 (tests) → WL-120. The client-side work this release implies is tracked separately under epic [WL-105](https://mnisan.atlassian.net/browse/WL-105).
 
 ## Context
 

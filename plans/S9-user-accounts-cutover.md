@@ -1,4 +1,7 @@
-# Plan S9 — Cutover: contracts, deployment config, docs, smoke test, client handoff (ticket TBD)
+# Plan S9 — Cutover: contracts, deployment config, docs, smoke test, client handoff (WL-109)
+
+**Tickets:** [WL-109](https://mnisan.atlassian.net/browse/WL-109), under epic [WL-104](https://mnisan.atlassian.net/browse/WL-104) (*User accounts: user-owned tenancy, login, and device management (server)*).
+Subtasks: scope 1 → WL-126, 2 → WL-127, 3 → WL-128, 4 and 7 → WL-129, 5 → WL-130, 6 → WL-131, 8 → WL-132. The client-side work this release implies is tracked separately under epic [WL-105](https://mnisan.atlassian.net/browse/WL-105).
 
 ## Context
 
@@ -109,8 +112,11 @@ list of what breaks, and the tickets — not the client code.
    - **Behavioral notes the client needs**: a 401 mid-sync now means "your token was revoked or expired" and
      the right response is to prompt for login, not to fail the sync silently; the same `DeviceId` under a
      different user is a different device; deleting a device from another machine logs this one out.
-   - **Tickets**: file the client work as its own `WL-##` issues (client repo, per `plans/README.md`), with the
-     re-vendor as the first and a blocker for the rest.
+   - **Tickets**: the client work is already filed under epic **WL-105** as client-repo work (per
+     `plans/README.md`) — **WL-133** re-vendor (blocks the rest), **WL-134** `ApiSyncProvider` login + 401
+     re-auth, **WL-135** `SettingsService` credential/session storage, **WL-136** login UI + hide registration
+     when `/auth/capabilities` disables it, **WL-137** `SyncCoordinator` strings + `SyncContractGuardTests`.
+     Point the handoff at those rather than filing new ones.
 
 7. **`plans/README.md`.** Add S6–S9 to the index table with dependencies, extend the sequencing notes (S6 → S7
    → S8 are strictly linear; S9 last), and update the stale "Cross-repo contract handoff" paragraph, which

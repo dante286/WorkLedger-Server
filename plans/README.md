@@ -21,10 +21,10 @@ only at `WorkLedger.Contracts` (see S0).
 | S3 | [S3-sync-endpoints.md](S3-sync-endpoints.md) | WL-76 (WL-82/83/84) (done) | S1, S2 |
 | S4 | [S4-reports.md](S4-reports.md) | WL-77 (WL-85/86/87) (done) | S1, S2 |
 | S5 | [S5-deployment-and-docs.md](S5-deployment-and-docs.md) | WL-78 (done) | S3, S4 |
-| S6 | [S6-user-accounts-and-registration.md](S6-user-accounts-and-registration.md) | TBD | S5 |
-| S7 | [S7-login-and-device-enrollment.md](S7-login-and-device-enrollment.md) | TBD | S6 |
-| S8 | [S8-account-deletion-and-device-management.md](S8-account-deletion-and-device-management.md) | TBD | S7 |
-| S9 | [S9-user-accounts-cutover.md](S9-user-accounts-cutover.md) | TBD | S6, S7, S8 |
+| S6 | [S6-user-accounts-and-registration.md](S6-user-accounts-and-registration.md) | WL-106 (WL-110/111/112/113/114/115) | S5 |
+| S7 | [S7-login-and-device-enrollment.md](S7-login-and-device-enrollment.md) | WL-107 (WL-116/117/118/119/120) | S6 |
+| S8 | [S8-account-deletion-and-device-management.md](S8-account-deletion-and-device-management.md) | WL-108 (WL-121/122/123/124/125) | S7 |
+| S9 | [S9-user-accounts-cutover.md](S9-user-accounts-cutover.md) | WL-109 (WL-126…WL-132) | S6, S7, S8 |
 
 **S6–S9 are one release: user accounts.** S2 built auth for a single seeded account with devices enrolled by a
 shared secret, and named per-user accounts as the deferred follow-up. S6–S9 are that follow-up — a **user
@@ -32,10 +32,12 @@ account becomes the tenancy root** (`Account` is renamed to `User` and gains ema
 user owns many devices, and each device syncs into that user's rows. It is a breaking change on the wire, so
 it lands as one release with a documented upgrade path (`POST /auth/claim`, then every device logs in again).
 
-> **Ticket numbers:** like the client plans, these use `Sn` as plan IDs with tickets left **TBD** — create each
-> fresh in Jira (project `WL`, cloud ID `ea0603f1-23bf-48c8-b2f9-f77728f8eb23`) when you pick it up, and it'll
-> get the next available `WL-##`. Consider a Jira component or label (`server` / `backend`) to separate these
-> from client tickets.
+> **Ticket numbers:** S6–S9 are filed under epic **WL-104** (*User accounts: user-owned tenancy, login, and
+> device management (server)*) — one `Task` per plan, `Subtask`s per scope item, labelled `server` + `auth`.
+> `Blocks` links encode the linear order (WL-106 → WL-107 → WL-108 → WL-109). The client-side cutover S9 hands
+> off is epic **WL-105**, whose first ticket (WL-133, re-vendor `WorkLedger.Contracts`) blocks the other four.
+> S0/S1 predate ticketing and stay **TBD**. New work goes in Jira project `WL`, cloud ID
+> `ea0603f1-23bf-48c8-b2f9-f77728f8eb23`; keep using the `server` / `client` labels to separate the two sides.
 
 ## Sequencing
 

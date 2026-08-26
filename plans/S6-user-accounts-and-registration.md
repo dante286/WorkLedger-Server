@@ -1,4 +1,7 @@
-# Plan S6 — User accounts: rename `Account` → `User`, password credentials, registration (ticket TBD)
+# Plan S6 — User accounts: rename `Account` → `User`, password credentials, registration (WL-106)
+
+**Tickets:** [WL-106](https://mnisan.atlassian.net/browse/WL-106), under epic [WL-104](https://mnisan.atlassian.net/browse/WL-104) (*User accounts: user-owned tenancy, login, and device management (server)*).
+Subtasks: scope 1–2 → WL-110, 3–4 → WL-111, 5 → WL-112, 6–7 → WL-113, 8–9 → WL-114, 10 (tests) → WL-115. The client-side work this release implies is tracked separately under epic [WL-105](https://mnisan.atlassian.net/browse/WL-105).
 
 ## Context
 
