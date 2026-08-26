@@ -27,6 +27,12 @@ list of what breaks, and the tickets — not the client code.
    vendored copy and write down the final inventory:
    - Added: `RegisterUserRequest`, `UserSummary`, `AuthCapabilitiesResponse`, `LoginRequest`, `LoginResponse`,
      `ChangePasswordRequest`, `DeviceSummary`, `DeleteAccountRequest`.
+   - `AuthCapabilitiesResponse` is
+     `(bool RegistrationEnabled, bool RegistrationRequiresSecret, int MinPasswordLength, bool HasUnclaimedAccount, int MaxFailedLogins, int LockoutMinutes)`
+     — **six fields, not the four S6 originally sketched.** The last two are
+     [WL-147](https://mnisan.atlassian.net/browse/WL-147), added in S6 (scope item 8) precisely so the shape
+     settles in one plan. Confirm they are actually present before writing the inventory down: the client
+     vendors this record exactly once, and re-opening it afterwards is a two-repo change.
    - Removed: `RegisterDeviceRequest`, `RegisterDeviceResponse`.
    - Changed: `WhoAmIResponse`.
    - Unchanged (verify, don't assume): everything under `Sync/` and `Payloads/`. **The sync wire format must
@@ -76,7 +82,11 @@ list of what breaks, and the tickets — not the client code.
 
 4. **`CLAUDE.md`.** Update the *Tenancy* section (title, `AccountId` → `UserId`, drop "v1 is
    single-account/multi-device: one seeded `Account` row"), the `Sync`/`Reports` paragraphs that name
-   `AccountId`, the deployment section's `Account__Name` mention, and the plans index reference. Add a short
+   `AccountId`, the deployment section's `Account__Name` mention, and the plans index reference. Also fix the
+   *Cross-repo* section's "Known drift as of this writing" paragraph, which still names pin `3e6e955` and lists
+   `SyncItemResult.AuthoritativeOperation` as drift: the client re-vendored at `2065662` on 2026-08-19 (WL-100)
+   and consumes `AuthoritativeOperation` as of WL-101, so that drift is closed and the paragraph now describes
+   a problem that no longer exists. Replace it with the new pin this plan establishes. Add a short
    paragraph on the auth model: credentials are user-level, tokens are device-level, revocation is the
    security stamp plus the device-row check, and the cache TTL is the lag. Follow the file's existing
    convention — rules live as XML docs on the type that owns them, so link to them rather than restating.
@@ -96,27 +106,75 @@ list of what breaks, and the tickets — not the client code.
      a deployment they want to poke at afterwards.
 
 6. **Client handoff (documentation only — do not edit the client repo).** Produce a
-   `plans/S9-client-handoff.md` (or a clearly-marked section of this plan's PR description) listing:
+   `plans/S9-client-handoff.md` (or a clearly-marked section of this plan's PR description).
+
+   **The job is narrower than it was when this plan was written.** The client is no longer waiting for a list
+   of tickets to file — it has three written plans of its own (`plans/08-user-accounts-login-cutover.md`,
+   `plans/09-auth-capabilities-and-account-ui.md`, `plans/10-account-management.md`, added 2026-08-26), each of
+   which states that it is blocked on this handoff and that **the handoff is authoritative where the two
+   disagree**. So hand those plans the facts they were derived from, and flag whatever has moved since. Cover:
    - **Re-vendor**: copy `src/WorkLedger.Contracts/` to client `Sync/Contracts/`, bump the provenance commit
-     in `Sync/Contracts/README.md`, and note that `ReportDtos.cs` stays un-vendored by the client's own
-     choice.
-   - **Client files that must change**: `Sync/ApiSyncProvider.cs` (drop `register-device` and the
-     `X-Bootstrap-Secret` header from the token path; add login; handle 401 by re-authenticating rather than
-     re-registering; the header comment listing depended-on server behaviors needs the revocation semantics
-     added), `Services/SettingsService.cs` (`ApiToken`/`ApiTokenExpiresAtUtc` stay, but a token is now
-     obtained by login — store the email, never the password; use the OS credential store or re-prompt),
-     `Services/SyncCoordinator.cs` (its "Register this device first." / "Device registered." strings),
-     `ViewModels/MainWindowViewModel.Sync.cs` and `Views/MainWindow.axaml` (a login form; **hide the
-     registration UI when `GET /auth/capabilities` reports `RegistrationEnabled=false`** — the requirement
-     that motivated the flag), and `Tests/WorkLedger.Tests/SyncContractGuardTests.cs`.
+     in `Sync/Contracts/README.md` (pinned at server `2065662` as of this writing), and note that
+     `ReportDtos.cs` stays un-vendored by the client's own choice. This is client plan 08 item 1 / **WL-133**,
+     and it blocks everything else on that side.
+   - **The contract inventory from item 1, verbatim.** Client plan 08 item 1 carries its own copy of that table
+     and explicitly says to verify it against this handoff rather than trust it. `AuthCapabilitiesResponse`'s
+     six fields are the row most likely to be stale there.
+   - **Which client plan covers what**, so nobody re-derives it:
+
+     | Client plan | Covers | Server plans it consumes |
+     |---|---|---|
+     | `08-user-accounts-login-cutover.md` | re-vendor, `AppSettings`, `ApiSyncProvider` login, the 401/423/429 policy, `SyncCoordinator` messaging, the different-user database guard, the plain sign-in row | S6 (contract), S7 |
+     | `09-auth-capabilities-and-account-ui.md` | the `GET /auth/capabilities` probe, registration and claim UI, rendering the auth state | S6 |
+     | `10-account-management.md` | devices, change password, logout-all, delete account | S7 (`/auth/password`), S8 |
+
+   - **Client files that must change** — still worth listing, because the handoff is what proves this side
+     knows what it is breaking: `Sync/ApiSyncProvider.cs` (drop `register-device` and the
+     `X-Bootstrap-Secret` header from the token path; add login; **do not** answer a 401 by re-authenticating
+     — see the note below; the header comment listing depended-on server behaviors needs the revocation
+     semantics added), `Services/SettingsService.cs` (`ApiToken`/`ApiTokenExpiresAtUtc` stay and gain an
+     `ApiEmail`, but a token is now obtained by login — store the email, **never** the password; an OS
+     credential store is a later option, re-prompting is v1), `Services/SyncCoordinator.cs` (its
+     "Register this device first." / "Device registered." strings), `ViewModels/MainWindowViewModel.Sync.cs`
+     and `Views/MainWindow.axaml` (a sign-in form; **hide the registration UI when `GET /auth/capabilities`
+     reports `RegistrationEnabled=false`** — the requirement that motivated the flag), and
+     `Tests/WorkLedger.Tests/SyncContractGuardTests.cs`.
    - **Behavioral notes the client needs**: a 401 mid-sync now means "your token was revoked or expired" and
-     the right response is to prompt for login, not to fail the sync silently; the same `DeviceId` under a
-     different user is a different device; deleting a device from another machine logs this one out.
-   - **Tickets**: the client work is already filed under epic **WL-105** as client-repo work (per
-     `plans/README.md`) — **WL-133** re-vendor (blocks the rest), **WL-134** `ApiSyncProvider` login + 401
-     re-auth, **WL-135** `SettingsService` credential/session storage, **WL-136** login UI + hide registration
-     when `/auth/capabilities` disables it, **WL-137** `SyncCoordinator` strings + `SyncContractGuardTests`.
-     Point the handoff at those rather than filing new ones.
+     the right response is to route the user to a sign-in form, not to fail the sync silently; the same
+     `DeviceId` under a different user is a different device; deleting a device from another machine logs this
+     one out.
+   - **One behavioral note going the other way — something *this* side should know.** The client will
+     deliberately **not** re-authenticate automatically on a 401. Its reasoning (client plan 08 item 4,
+     [WL-134](https://mnisan.atlassian.net/browse/WL-134)): a 401 from `/auth/login` is **deterministic** — the
+     credential was wrong and the same credential will be wrong next time — so the correct automated retry
+     count for a rejected credential is zero, not "a few, with backoff". The client therefore makes **at most
+     one unattended failed login attempt per credential** and then discards it, which is exactly what stops a
+     background sync on a 15-minute timer from locking a user out of their own server unattended.
+     **The consequence to expect here: a client whose token has been revoked goes quiet and waits for a human.**
+     "Devices stopped syncing after a security-stamp bump and stayed stopped until someone signed in again" is
+     **intended behavior, not a client bug** — don't add a server-side accommodation for it, and don't read it
+     as a sign that revocation is too aggressive.
+   - **Tickets**: the client work is filed under epic **WL-105** as client-repo work (per `plans/README.md`).
+     The list has grown past the five this plan originally named:
+
+     | Ticket | Client plan | What |
+     |---|---|---|
+     | **WL-133** | 08 item 1 | re-vendor `WorkLedger.Contracts` — blocks the rest |
+     | **WL-134** | 08 items 3–4 | `ApiSyncProvider` login and the 401/423/429 policy. Its summary was corrected from "treat 401 as re-authenticate" to "treat 401 as sign-in-required" — the original wording, taken literally, builds the lockout storm |
+     | **WL-135** | 08 item 2 | `AppSettings`/`SettingsService`: the signed-in email and token, never the password |
+     | **WL-136** | 08 item 7, 09 | login UI, since **split** into **WL-145** (the plain sign-in row, plan 08) and **WL-146** (capability-driven registration, claim, and revocation routing, plan 09) |
+     | **WL-137** | 08 items 5, 8 | `SyncCoordinator` messaging and `SyncContractGuardTests` |
+     | **WL-138** | 08 item 6 | guard the local database against signing in as a different user |
+     | **WL-139** | 10 | account management — the client half of S8 — with subtasks **WL-140** (provider calls), **WL-141** (device list), **WL-142** (change password and logout-all), **WL-143** (delete account), **WL-144** (tests and docs) |
+
+     Point the handoff at these rather than filing new ones.
+   - **WL-138 deserves its own paragraph in the handoff**, because it is the one hazard this release creates
+     that **nothing server-side can detect**. The client's SQLite database has no user column, so signing in as
+     a different user against the same database pushes one user's rows into the other's account and pulls the
+     other's rows into a database full of the first's. Every server-side check passes — the token is valid, the
+     scope is right, the rows are well-formed, and the merge rules do exactly what they say. Under S2's single
+     seeded account it was unreachable; after S6 it is one typo in a login form, and the guard is entirely the
+     client's to build.
 
 7. **`plans/README.md`.** Add S6–S9 to the index table with dependencies, extend the sequencing notes (S6 → S7
    → S8 are strictly linear; S9 last), and update the stale "Cross-repo contract handoff" paragraph, which
@@ -149,7 +207,11 @@ list of what breaks, and the tickets — not the client code.
 - `README.md`, `CLAUDE.md`, `.env.example` and `docker-compose.yml` contain no reference to
   `register-device`, `Account__Name`, `account_id` or "single v1 account".
 - `plans/README.md` indexes S6–S9 and its cross-repo paragraph matches reality.
-- The client handoff lists every client file that breaks, with the re-vendor step first.
+- The client handoff lists every client file that breaks with the re-vendor step first, points at client plans
+  `08`/`09`/`10` by name rather than restating them, carries the current WL-105 ticket list (WL-133–139, plus
+  WL-140–144 under WL-139 and WL-145/WL-146 under WL-136), and records the 401 behavior in **both**
+  directions — the client routes a 401 to a sign-in form, and this side should expect a revoked client to go
+  quiet until a human signs in.
 
 ## Suggested commit message
 
@@ -163,8 +225,10 @@ S6/S7 already carry the `feat!` commits.)
 ## Prompt for Claude Code
 
 > Read `CLAUDE.md`, `plans/README.md`, and `plans/S6`–`S8` first, then read the client repo at
-> `E:\GitHub-Repos\WorkLedger-Client` — `Sync/Contracts/README.md`, `Sync/ApiSyncProvider.cs`,
-> `Services/SettingsService.cs`, `Services/SyncCoordinator.cs` — **without modifying it**. Audit
+> `E:\GitHub-Repos\WorkLedger-Client` — its `plans/08-user-accounts-login-cutover.md`,
+> `plans/09-auth-capabilities-and-account-ui.md` and `plans/10-account-management.md` first, then
+> `Sync/Contracts/README.md`, `Sync/ApiSyncProvider.cs`, `Services/SettingsService.cs` and
+> `Services/SyncCoordinator.cs` — **without modifying it**. Audit
 > `src/WorkLedger.Contracts` against the client's vendored copy and write down the final inventory of added,
 > removed and changed DTOs, confirming the sync wire format (PascalCase `SyncJson.Options`, the
 > `SyncEntityTypes`/`SyncOperations` strings, positional push results) is unchanged since S6. Update
@@ -177,8 +241,15 @@ S6/S7 already carry the `feat!` commits.)
 > throwaway account, log in from two devices, push/pull/conflict/report, list devices, and delete the account
 > at the end (with a `-KeepAccount` switch), asserting a wrong password and a wrong signup secret both 401 —
 > and fix the `.DESCRIPTION` block, which currently says it does not clean up. Write
-> `plans/S9-client-handoff.md` listing the re-vendor step, every client file that breaks and why, the
-> behavioral notes (401 now means re-login; hide the registration UI when `/auth/capabilities` reports it
-> disabled), and the client tickets to file. Add S6–S9 to `plans/README.md` and fix its stale cross-repo
-> paragraph. Verify by bringing the stack up twice: once on a fresh volume following the README verbatim, and
-> once on a volume seeded with pre-S6 data to prove the claim path.
+> `plans/S9-client-handoff.md` listing the re-vendor step, the settled contract inventory (note that
+> `AuthCapabilitiesResponse` now has **six** fields), every client file that breaks and why, and the
+> behavioral notes in **both** directions: a 401 routes the user to a sign-in form and the registration UI
+> hides when `/auth/capabilities` reports it disabled — and, going the other way, the client will **not**
+> auto-retry a login after a 401, so a revoked device goes quiet until a human signs in, which is intended
+> rather than a bug to accommodate here. Point the handoff at the client's own plans `08`, `09` and `10`
+> (written already, and blocked on this document) and at the existing WL-105 tickets — WL-133–139, with
+> WL-140–144 under WL-139 and WL-145/WL-146 under WL-136 — rather than filing new ones, and call out WL-138
+> (signing in as a different user against the same local SQLite database) as the one hazard nothing
+> server-side can detect. Add S6–S9 to `plans/README.md` and fix its stale cross-repo paragraph. Verify by
+> bringing the stack up twice: once on a fresh volume following the README verbatim, and once on a volume
+> seeded with pre-S6 data to prove the claim path.

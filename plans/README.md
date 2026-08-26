@@ -21,7 +21,7 @@ only at `WorkLedger.Contracts` (see S0).
 | S3 | [S3-sync-endpoints.md](S3-sync-endpoints.md) | WL-76 (WL-82/83/84) (done) | S1, S2 |
 | S4 | [S4-reports.md](S4-reports.md) | WL-77 (WL-85/86/87) (done) | S1, S2 |
 | S5 | [S5-deployment-and-docs.md](S5-deployment-and-docs.md) | WL-78 (done) | S3, S4 |
-| S6 | [S6-user-accounts-and-registration.md](S6-user-accounts-and-registration.md) | WL-106 (WL-110/111/112/113/114/115) | S5 |
+| S6 | [S6-user-accounts-and-registration.md](S6-user-accounts-and-registration.md) | WL-106 (WL-110/111/112/113/114/115), WL-147 | S5 |
 | S7 | [S7-login-and-device-enrollment.md](S7-login-and-device-enrollment.md) | WL-107 (WL-116/117/118/119/120) | S6 |
 | S8 | [S8-account-deletion-and-device-management.md](S8-account-deletion-and-device-management.md) | WL-108 (WL-121/122/123/124/125) | S7 |
 | S9 | [S9-user-accounts-cutover.md](S9-user-accounts-cutover.md) | WL-109 (WL-126…WL-132) | S6, S7, S8 |
@@ -34,8 +34,12 @@ it lands as one release with a documented upgrade path (`POST /auth/claim`, then
 
 > **Ticket numbers:** S6–S9 are filed under epic **WL-104** (*User accounts: user-owned tenancy, login, and
 > device management (server)*) — one `Task` per plan, `Subtask`s per scope item, labelled `server` + `auth`.
-> `Blocks` links encode the linear order (WL-106 → WL-107 → WL-108 → WL-109). The client-side cutover S9 hands
-> off is epic **WL-105**, whose first ticket (WL-133, re-vendor `WorkLedger.Contracts`) blocks the other four.
+> `Blocks` links encode the linear order (WL-106 → WL-107 → WL-108 → WL-109). **WL-147** (expose the lockout
+> policy on `AuthCapabilitiesResponse`) is scope for S6 item 8 but is filed as a `Task` under WL-104 rather
+> than as a subtask of WL-106 — see the note at the end of that scope item. The client-side cutover S9 hands
+> off is epic **WL-105**, whose first ticket (WL-133, re-vendor `WorkLedger.Contracts`) blocks everything else
+> on that side. WL-105 has since grown to WL-133–139, with WL-136 split into WL-145/WL-146 and WL-139 carrying
+> WL-140–144; the client's own `plans/08`–`10` map those tickets to scope items.
 > S0/S1 predate ticketing and stay **TBD**. New work goes in Jira project `WL`, cloud ID
 > `ea0603f1-23bf-48c8-b2f9-f77728f8eb23`; keep using the `server` / `client` labels to separate the two sides.
 
@@ -58,11 +62,20 @@ it lands as one release with a documented upgrade path (`POST /auth/claim`, then
 
 ## Cross-repo contract handoff (important)
 
-`WorkLedger.Contracts` is authored in **this** repo (S0). The **client** consumes it only when its real
-`ApiSyncProvider` is implemented (client Plan 6) — which is not now. Until then the client keeps its own stub
-DTOs. When you wire the client up for real, switch it to the published `WorkLedger.Contracts` package (S0
-covers the optional GitHub Packages publish step) so both sides share identical types. Do **not** modify the
-client repo as part of these server plans.
+`WorkLedger.Contracts` is authored in **this** repo (S0). The client **consumes it today**: client Plan 6
+shipped the real `ApiSyncProvider`, and rather than take a package it keeps a **byte-identical vendored copy**
+at `Sync/Contracts/`, with the source commit recorded in `Sync/Contracts/README.md` — pinned at server
+`2065662` as of 2026-08-26. (`ReportDtos.cs` is deliberately not vendored; the client computes its own reports
+and never calls `/reports/*`.) A cross-repo `ProjectReference` was rejected because the client's CI checks out
+only its own repo, and this repo publishes no package.
+
+The consequence to keep in mind: **changing `WorkLedger.Contracts` is a two-repo change**, and nothing detects
+drift automatically — the client's `SyncContractGuardTests` only checks the vendored copy against the
+*client's* own expectations, never against this repo. So a contract change means deliberately re-taking the
+copy and bumping the pin. S6–S8 change the contract three times; **S9 is the single re-vendoring pass** and is
+what produces the handoff. Publishing the package (S0 sketched the GitHub Packages step) is the follow-up that
+would remove this whole class of problem. Do **not** modify the client repo as part of these server plans —
+read it, coordinate, and land client edits as client-repo work.
 
 ## Contract inputs Claude Code will need
 
