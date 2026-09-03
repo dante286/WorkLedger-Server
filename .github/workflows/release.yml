@@ -28,6 +28,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # github.ref_name is the tag verbatim, e.g. "v0.2.0", but VERSION below lands on
+      # -p:InformationalVersion, and MSBuild rejects a leading "v" as an invalid NuGet version
+      # string (NETSDK1018). That is why the v0.1.0 release build failed: it published no image
+      # and never reached the release step. Strip the prefix here so the whole repo agrees that
+      # VERSION is a bare semver -- the Dockerfile's own default is 0.0.0-dev, and compose passes
+      # WORKLEDGER_VERSION unprefixed. docker/metadata-action below keeps taking the raw tag,
+      # since type=semver parses the "v" happily; it is only the build arg that cannot.
+      - name: Strip the tag's leading "v" for the build arg
+        id: version
+        run: echo "number=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
       - name: Derive image tags
         id: meta
         uses: docker/metadata-action@v5
@@ -50,7 +61,7 @@ jobs:
           # Stamped onto AssemblyInformationalVersion, so GET / on a deployed container reports the tag
           # it was built from.
           build-args: |
-            VERSION=${{ github.ref_name }}
+            VERSION=${{ steps.version.outputs.number }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
