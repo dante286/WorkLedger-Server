@@ -50,8 +50,9 @@ Three projects (`WorkLedger-Server.slnx`), .NET 10, Minimal APIs, EF Core + Npgs
   `MapAuthEndpoints()`; none of them opts out of the fallback policy.
 - **`tests/WorkLedger.Server.Tests`** — xUnit, `WebApplicationFactory<Program>` + Testcontainers.
 
-`plans/` holds the S0–S9 build plans (S0–S8 shipped; S9 pending) and is the design record —
-`plans/README.md` explains the cross-repo contract handoff and house style.
+`plans/` holds the S0–S9 build plans (all shipped) and is the design record — `plans/README.md`
+explains the cross-repo contract handoff and house style. `plans/S9-client-handoff.md` is the
+change list S9 handed the client, and is the authoritative statement of the current wire contract.
 
 ### Deployment (`Dockerfile`, `docker-compose.yml`)
 
@@ -68,9 +69,22 @@ document deployment behaviour rather than here. Three things that bite when edit
 - `scripts/smoke-test.ps1` is the only test that exercises the deployment (image, compose wiring,
   migrate-on-boot, a container-minted token). It writes real rows and does not clean up.
 
+### The auth model in one paragraph
+
+**Credentials are user-level; tokens are device-level.** A person registers once
+(`POST /auth/register`, gated by `Bootstrap:Secret`), then signs in *from a device*
+(`POST /auth/login`) and gets a JWT scoped to that `(user, device)` pair. Nothing else mints a token.
+What replaces short expiry is revocation: `TokenRevocation` re-checks the token's device row joined to
+its user on every authenticated request, so a token dies when the device is gone, the user is gone, or
+the `stamp` claim no longer matches `User.SecurityStamp` — and **`Auth:StampCacheSeconds` is the lag**,
+but only for a revocation that happened somewhere else, because the endpoints that revoke evict the
+cache key themselves. The three sections below are the detail; the rules live as XML docs on
+`AuthEndpoints`, `AccountEndpoints`, `TokenRevocation`, `JwtTokenService` and `User`.
+
 ### Tenancy: UserId always comes from the token
 
-The user account is the top of the tenancy tree (S6): one `User` row, many `Device` rows.
+The user account is the top of the tenancy tree (S6): one `User` row, many `Device` rows, and the
+rows a device syncs belong to the **user** — `OriginDeviceId` is provenance, not ownership.
 `ICurrentContext` reads `user_id`/`device_id` from JWT claims; **nothing in a request body or URL may
 widen scope**. Every sync and report query filters on `UserId`. Ids exposed in routes and payloads are
 cross-device `SyncId` Guids, never the server's internal `int Id` — a route with an unknown or
@@ -184,17 +198,22 @@ own repo). Consequences:
 - The client's `Tests/WorkLedger.Tests/SyncContractGuardTests.cs` only guards the vendored copy against
   the *client's* own constants and payload shapes. Nothing automatically detects that the copy has fallen
   behind this repo.
-- **Known drift as of this writing:** the copy is pinned at server commit `3e6e955`; since then this repo
-  added `SyncItemResult.AuthoritativeOperation` (WL-98), `Reports/ReportDtos.cs`, S6's account contract —
-  `WhoAmIResponse.AccountId` renamed to `UserId` (a breaking change), plus the new `RegisterUserRequest`,
-  `UserSummary` and `AuthCapabilitiesResponse` — and S7's login contract: `RegisterDeviceRequest` and
-  `RegisterDeviceResponse` **deleted**, the new `LoginRequest`, `LoginResponse` and
-  `ChangePasswordRequest`, and `WhoAmIResponse` widened to `(UserId, Email, DisplayName, DeviceId)` —
-  and S8's account-management contract: the new `DeviceSummary` and `DeleteAccountRequest`.
-  None of it is on the client.
-  **S9 re-vendors all of it in one pass**, deliberately: S6–S8 each change `WorkLedger.Contracts`, and
-  re-taking the copy three times would hand the client three breaking updates instead of one. Re-check
-  with `git log --oneline <pinned-commit>..HEAD -- src/WorkLedger.Contracts`.
+- **Known drift:** the copy is pinned at server `2065662` (re-vendored 2026-08-19, WL-100), so the
+  drift is exactly S6–S8's **auth** contract and nothing else: `RegisterDeviceRequest`/`Response`
+  deleted, `WhoAmIResponse` reshaped from `(AccountId, DeviceId)` to
+  `(UserId, Email, DisplayName, DeviceId)`, and eight added records (`RegisterUserRequest`,
+  `UserSummary`, `AuthCapabilitiesResponse`, `LoginRequest`, `LoginResponse`, `ChangePasswordRequest`,
+  `DeviceSummary`, `DeleteAccountRequest`). **`plans/S9-client-handoff.md` is that inventory in full**
+  — read it rather than re-deriving it, and re-check with
+  `git log --oneline <pinned-commit>..HEAD -- src/WorkLedger.Contracts`.
+  Two things the older version of this paragraph got wrong and that are worth not re-asserting:
+  `SyncItemResult.AuthoritativeOperation` (WL-98) **is** on the client and consumed as of WL-101, and
+  `Reports/ReportDtos.cs` is not drift at all — the client deliberately does not vendor it, because it
+  computes its own local reports and never calls `/reports/*`.
+  **S9 re-vendored the whole lot in one pass**, deliberately: S6–S8 each change
+  `WorkLedger.Contracts`, and re-taking the copy three times would have handed the client three
+  breaking updates instead of one. **The sync wire format is unchanged since before S6** — audited
+  file-by-file in S9 (WL-126), not assumed.
 
 ### Server comments that may have gone stale
 

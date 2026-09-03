@@ -1,8 +1,11 @@
 # WorkLedger Server — Build Plans Index
 
 The client-side MVP plans (`plans/01`–`plans/07`) build sync up to the point where a real backend is
-required. Client Plan 6 (`06-api-sync-provider.md`) implements `ApiSyncProvider` as a **stub** against a
-documented-but-nonexistent REST contract. **These server plans build the thing that contract points at.**
+required; client Plan 6 (`06-api-sync-provider.md`) wrote `ApiSyncProvider` against a
+documented-but-then-nonexistent REST contract. **These server plans built the thing that contract points
+at**, and the client now talks to it for real. The client's `plans/08`–`plans/10` are the other half of
+this release's cutover (login UI, capabilities, account management) and are blocked on
+[S9-client-handoff.md](S9-client-handoff.md).
 
 Stack decision (2026-08-10): **C# / ASP.NET Core Minimal APIs on .NET 10, EF Core + Npgsql → PostgreSQL,
 JWT bearer auth, xUnit + Testcontainers, Docker Compose.** Chosen over the original README's FastAPI/SQLAlchemy
@@ -24,7 +27,8 @@ only at `WorkLedger.Contracts` (see S0).
 | S6 | [S6-user-accounts-and-registration.md](S6-user-accounts-and-registration.md) | WL-106 (WL-110/111/112/113/114/115), WL-147 (done) | S5 |
 | S7 | [S7-login-and-device-enrollment.md](S7-login-and-device-enrollment.md) | WL-107 (WL-116/117/118/119/120) (done) | S6 |
 | S8 | [S8-account-deletion-and-device-management.md](S8-account-deletion-and-device-management.md) | WL-108 (WL-121/122/123/124/125) (done) | S7 |
-| S9 | [S9-user-accounts-cutover.md](S9-user-accounts-cutover.md) | WL-109 (WL-126…WL-132) | S6, S7, S8 |
+| S9 | [S9-user-accounts-cutover.md](S9-user-accounts-cutover.md) | WL-109 (WL-126…WL-132) (done) | S6, S7, S8 |
+| — | [S9-client-handoff.md](S9-client-handoff.md) | WL-131 → client epic WL-105 | S9 |
 
 **S6–S9 are one release: user accounts.** S2 built auth for a single seeded account with devices enrolled by a
 shared secret, and named per-user accounts as the deferred follow-up. S6–S9 are that follow-up — a **user
@@ -56,9 +60,10 @@ it lands as one release with a documented upgrade path (`POST /auth/claim`, then
   registration while keeping `/auth/register-device` as the token source, S7 replaces it with login and adds
   the security-stamp revocation, S8 spends that mechanism on device management and account deletion. Don't
   parallelise them — they touch the same entity, the same claims and overlapping migrations.
-- **S9 runs last** and only after all three: it re-vendors the settled contract to the client, rewrites the
-  operator docs and deployment config, reworks the smoke test, and produces the client handoff. Re-vendoring
-  after each of S6–S8 would mean three client PRs chasing a moving contract.
+- **S9 ran last** and only after all three: it audited the settled contract, rewrote the operator docs and
+  deployment config, reworked the smoke test, and produced the client handoff. Re-vendoring after each of
+  S6–S8 would have meant three client PRs chasing a moving contract. It deliberately added **no server
+  behaviour** and **did not touch the client repo** — the re-vendor itself is client-repo work (WL-133).
 
 ## Cross-repo contract handoff (important)
 
@@ -72,10 +77,12 @@ only its own repo, and this repo publishes no package.
 The consequence to keep in mind: **changing `WorkLedger.Contracts` is a two-repo change**, and nothing detects
 drift automatically — the client's `SyncContractGuardTests` only checks the vendored copy against the
 *client's* own expectations, never against this repo. So a contract change means deliberately re-taking the
-copy and bumping the pin. S6–S8 change the contract three times; **S9 is the single re-vendoring pass** and is
-what produces the handoff. Publishing the package (S0 sketched the GitHub Packages step) is the follow-up that
-would remove this whole class of problem. Do **not** modify the client repo as part of these server plans —
-read it, coordinate, and land client edits as client-repo work.
+copy and bumping the pin. S6–S8 changed the contract three times; **S9 is the single cutover pass**, and what
+it produces is [S9-client-handoff.md](S9-client-handoff.md) — the settled inventory of what was added,
+removed and changed, plus the list of client files that break. The re-vendor itself is client-repo work
+(WL-133), and it blocks the rest of client epic WL-105. Publishing the package (S0 sketched the GitHub
+Packages step) is the follow-up that would remove this whole class of problem. Do **not** modify the client
+repo as part of these server plans — read it, coordinate, and land client edits as client-repo work.
 
 ## Contract inputs Claude Code will need
 

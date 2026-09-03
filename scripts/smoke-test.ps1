@@ -1,28 +1,42 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-    End-to-end smoke test against a running WorkLedger stack (plans/S5, acceptance criterion 3).
+    End-to-end smoke test against a running WorkLedger stack (plans/S5, reworked for user accounts in
+    plans/S9).
 
 .DESCRIPTION
-    Exercises the deployed surface the way two real devices would: register, push a batch, pull it from
-    a second device, conflict, and report. This is deliberately not a unit test -- the test suite
-    already covers the merge and counting rules against Testcontainers. What only this can catch is the
-    deployment itself: image, container config, compose wiring, migrations-on-boot, and the fact that a
-    token minted by the container is accepted by the container.
+    Exercises the deployed surface the way a real person with two devices would: read the server's
+    capabilities, register an account, sign in from two devices, push a batch, pull it on the second
+    device, conflict, report, list the devices, and delete the account again. This is deliberately not
+    a unit test -- the test suite already covers the merge rules, the counting rules and the auth rules
+    against Testcontainers. What only this can catch is the deployment itself: image, container config,
+    compose wiring, migrations-on-boot, and the fact that a token minted by the container is accepted
+    by the container.
 
     Every step asserts; the first failure stops the run with a non-zero exit code, because each step
     depends on the one before it.
 
-    The data it writes is real and stays in the database: one project named "Smoke test <timestamp>"
-    with one task and two time entries, in the single v1 account. Nothing is cleaned up (a delete would
-    only tombstone it anyway), so run it against a deployment you do not mind seeding -- or drop the
-    volume afterwards with `docker compose down -v`.
+    IT CLEANS UP AFTER ITSELF. The account it creates is a throwaway
+    (smoke+<timestamp>@example.invalid) and the last step is DELETE /auth/account, which removes that
+    user and everything pushed under it in one transaction. It never touches any other account: it
+    creates one, uses it, and deletes the one it created. Pass -KeepAccount to skip the deletion and
+    leave the account and its rows in place -- useful when you want to poke at the deployment
+    afterwards, and it prints the credentials so you can sign in.
+
+    Registration must be open on the target (Auth__RegistrationEnabled / REGISTRATIONS_ALLOWED), and
+    the run spends five requests against the per-IP credential rate limit
+    (Auth__LoginRateLimitPerMinute, 10 by default), so back-to-back runs inside one minute can trip a
+    429.
 
 .PARAMETER BaseUrl
     Where the API is. Defaults to http://localhost:<API_PORT from .env, else 8080>.
 
 .PARAMETER BootstrapSecret
-    The X-Bootstrap-Secret value. Defaults to Bootstrap__Secret from .env, then from the environment.
+    The X-Bootstrap-Secret value, which now gates registration rather than token issuance. Defaults to
+    Bootstrap__Secret from .env, then from the environment.
+
+.PARAMETER KeepAccount
+    Skip the closing DELETE /auth/account, leaving the throwaway account and its rows behind.
 
 .PARAMETER Up
     Run `docker compose up -d --build` first, and wait longer for the API to come up.
@@ -35,11 +49,15 @@
 
 .EXAMPLE
     pwsh ./scripts/smoke-test.ps1 -BaseUrl https://workledger.example.com -BootstrapSecret $secret
+
+.EXAMPLE
+    pwsh ./scripts/smoke-test.ps1 -KeepAccount
 #>
 [CmdletBinding()]
 param(
     [string]$BaseUrl,
     [string]$BootstrapSecret,
+    [switch]$KeepAccount,
     [switch]$Up,
     [switch]$Down
 )
@@ -168,6 +186,9 @@ if ($Up) {
 }
 
 $exitCode = 0
+# Declared before the try so the catch block can mention it under Set-StrictMode even when the run
+# failed before registration got as far as choosing one.
+$email = $null
 
 try {
     # --- the deployment is serving ---------------------------------------------------------------
@@ -194,24 +215,68 @@ try {
     Start-Step 'unauthenticated requests are rejected'
     Confirm-That '/sync/pull without a token is 401' ((Invoke-Api -Path '/sync/pull').Status -eq 401)
     Confirm-That '/reports/weekly without a token is 401' ((Invoke-Api -Path '/reports/weekly').Status -eq 401)
-    $badSecret = Invoke-Api -Method POST -Path '/auth/register-device' -Body @{ DeviceId = 'smoke-nope' } -Headers @{ 'X-Bootstrap-Secret' = 'wrong-secret' }
-    Confirm-That 'register-device with a wrong bootstrap secret is 401' ($badSecret.Status -eq 401)
+    Confirm-That '/auth/devices without a token is 401' ((Invoke-Api -Path '/auth/devices').Status -eq 401)
 
-    # --- two devices enrol -----------------------------------------------------------------------
-    Start-Step 'registering two devices'
+    # --- what this server says about itself ------------------------------------------------------
+    Start-Step 'GET /auth/capabilities (anonymous: it is configuration, not secrets)'
+    $capabilities = Invoke-Api -Path '/auth/capabilities'
+    Confirm-That 'capabilities returns 200' ($capabilities.Status -eq 200) $capabilities.Text
+    $minPasswordLength = [int]$capabilities.Body.minPasswordLength
+    Confirm-That 'it reports a minimum password length' ($minPasswordLength -gt 0) $capabilities.Text
+    Confirm-That 'it reports the lockout policy (WL-147: six fields, not four)' `
+        (($null -ne $capabilities.Body.maxFailedLogins) -and ($null -ne $capabilities.Body.lockoutMinutes)) $capabilities.Text
+    if (-not $capabilities.Body.registrationEnabled) {
+        throw "Registration is disabled on $BaseUrl, so this script cannot create its throwaway account. Set REGISTRATIONS_ALLOWED=true (or point -BaseUrl at a deployment where it is on)."
+    }
+    Write-Host "      policy: minPasswordLength $minPasswordLength, lockout $($capabilities.Body.maxFailedLogins) failures / $($capabilities.Body.lockoutMinutes) min" -ForegroundColor DarkGray
+
+    # --- register a throwaway account ------------------------------------------------------------
+    Start-Step 'registering a throwaway account'
     $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')
+    # example.invalid is reserved by RFC 2606 and can never be a real address, which matters because
+    # this server does not verify email and a typo'd real one would be someone else's.
+    $email = "smoke+$stamp@example.invalid"
+    $password = "smoke-$([guid]::NewGuid().ToString('N'))"
+    if ($password.Length -lt $minPasswordLength) { $password = $password.PadRight($minPasswordLength, 'x') }
+
+    # Only this script can see this in a real container: the secret is checked before the body is.
+    $badSecret = Invoke-Api -Method POST -Path '/auth/register' -Headers @{ 'X-Bootstrap-Secret' = 'wrong-secret' } -Body @{
+        Email = "smoke-nope+$stamp@example.invalid"; Password = $password
+    }
+    Confirm-That 'registration with a wrong bootstrap secret is 401' ($badSecret.Status -eq 401) "status $($badSecret.Status): $($badSecret.Text)"
+
+    $registered = Invoke-Api -Method POST -Path '/auth/register' -Headers @{ 'X-Bootstrap-Secret' = $BootstrapSecret } -Body @{
+        Email = $email; Password = $password; DisplayName = "Smoke test $stamp"
+    }
+    Confirm-That 'registration returns 201 and the new user' (($registered.Status -eq 201) -and ($registered.Body.email -eq $email)) "status $($registered.Status): $($registered.Text)"
+    Confirm-That 'registration hands back no token (tokens are device-scoped)' (-not ($registered.Body.PSObject.Properties.Name -contains 'token')) $registered.Text
+    $userId = [int]$registered.Body.id
+
+    # --- two devices sign in ---------------------------------------------------------------------
+    Start-Step 'signing in from two devices'
     $deviceA = "smoke-a-$stamp"
     $deviceB = "smoke-b-$stamp"
 
+    # One failure only: MaxFailedLogins is 5 by default, and the successful login below resets the
+    # counter, so this cannot lock the account it is about to use.
+    $wrongPassword = Invoke-Api -Method POST -Path '/auth/login' -Body @{
+        Email = $email; Password = "$password-not"; DeviceId = $deviceA
+    }
+    Confirm-That 'login with a wrong password is 401' ($wrongPassword.Status -eq 401) "status $($wrongPassword.Status): $($wrongPassword.Text)"
+
     $tokens = @{}
     foreach ($device in @($deviceA, $deviceB)) {
-        $registered = Invoke-Api -Method POST -Path '/auth/register-device' -Headers @{ 'X-Bootstrap-Secret' = $BootstrapSecret } -Body @{ DeviceId = $device; Label = "smoke test $device" }
-        Confirm-That "$device got a token" (($registered.Status -eq 200) -and [bool]$registered.Body.token) "status $($registered.Status): $($registered.Text)"
-        $tokens[$device] = $registered.Body.token
+        $login = Invoke-Api -Method POST -Path '/auth/login' -Body @{
+            Email = $email; Password = $password; DeviceId = $device; DeviceLabel = "smoke test $device"
+        }
+        Confirm-That "$device signed in and got a token" (($login.Status -eq 200) -and [bool]$login.Body.token) "status $($login.Status): $($login.Text)"
+        Confirm-That "$device's token identifies the signed-in user" ($login.Body.user.id -eq $userId) $login.Text
+        $tokens[$device] = $login.Body.token
     }
 
     $whoami = Invoke-Api -Path '/auth/whoami' -Token $tokens[$deviceA]
-    Confirm-That '/auth/whoami echoes the calling device' (($whoami.Status -eq 200) -and ($whoami.Body.deviceId -eq $deviceA))
+    Confirm-That '/auth/whoami echoes the calling device' (($whoami.Status -eq 200) -and ($whoami.Body.deviceId -eq $deviceA)) $whoami.Text
+    Confirm-That '/auth/whoami echoes the user, not an account id' (($whoami.Body.userId -eq $userId) -and ($whoami.Body.email -eq $email)) $whoami.Text
 
     # --- device A pushes project -> task -> two entries -------------------------------------------
     Start-Step 'device A pushes a project, a task and two time entries'
@@ -318,6 +383,8 @@ try {
     Confirm-That 'weekly report has seven zero-filled days' ($weekly.Body.days.Count -eq 7)
     Confirm-That 'weekly report includes this project' (@($weekly.Body.projects | Where-Object { $_.projectSyncId -eq $projectId }).Count -eq 1)
     Confirm-That 'weekly total covers the pushed hour' ($weekly.Body.totalSeconds -ge 3600)
+    # A brand-new account has nothing else in it, which the pre-S9 shared-account version could not assert.
+    Confirm-That 'a fresh account totals exactly what it pushed' ($weekly.Body.totalSeconds -eq 3600) "got $($weekly.Body.totalSeconds)"
 
     $taskReport = Invoke-Api -Path "/reports/tasks/$taskId" -Token $tokens[$deviceA]
     Confirm-That 'task report totals the hour' (($taskReport.Status -eq 200) -and ($taskReport.Body.totalSeconds -eq 3600)) $taskReport.Text
@@ -332,12 +399,64 @@ try {
     Confirm-That 'unknown format is 400' ((Invoke-Api -Path '/reports/weekly?format=xlsx' -Token $tokens[$deviceA]).Status -eq 400)
     Confirm-That 'from after to is 400' ((Invoke-Api -Path "/reports/projects/$projectId`?from=2026-03-05&to=2026-03-01" -Token $tokens[$deviceA]).Status -eq 400)
 
+    # --- the account knows about both devices ----------------------------------------------------
+    Start-Step 'GET /auth/devices lists both sign-ins'
+    $devices = Invoke-Api -Path '/auth/devices' -Token $tokens[$deviceA]
+    Confirm-That 'devices returns 200' ($devices.Status -eq 200) $devices.Text
+    $deviceRows = @($devices.Body)
+    Confirm-That 'exactly the two devices that signed in' ($deviceRows.Count -eq 2) $devices.Text
+    Confirm-That 'both are addressed by the client-side deviceId, never a server row id' `
+        ((@($deviceRows | Where-Object { $_.deviceId -eq $deviceA }).Count -eq 1) -and
+         (@($deviceRows | Where-Object { $_.deviceId -eq $deviceB }).Count -eq 1)) $devices.Text
+    $current = @($deviceRows | Where-Object { $_.isCurrent })
+    Confirm-That 'isCurrent marks the calling device, and only it' `
+        (($current.Count -eq 1) -and ($current[0].deviceId -eq $deviceA)) $devices.Text
+    Confirm-That 'the label sent at login came back' (@($deviceRows | Where-Object { $_.label -eq "smoke test $deviceA" }).Count -eq 1) $devices.Text
+
+    # --- clean up after ourselves ----------------------------------------------------------------
+    if ($KeepAccount) {
+        Start-Step 'skipping DELETE /auth/account (-KeepAccount)'
+        Write-Host "      account $email left in place; password: $password" -ForegroundColor Yellow
+        Write-Host "      project $projectId stays with it; docker compose down -v drops everything" -ForegroundColor DarkGray
+    }
+    else {
+        Start-Step 'DELETE /auth/account removes the throwaway account and everything under it'
+
+        $wrongConfirm = Invoke-Api -Method DELETE -Path '/auth/account' -Token $tokens[$deviceA] -Body @{
+            Password = $password; ConfirmEmail = 'someone-else@example.invalid'
+        }
+        Confirm-That 'deletion with the wrong confirmation email is 400' ($wrongConfirm.Status -eq 400) "status $($wrongConfirm.Status): $($wrongConfirm.Text)"
+
+        $wrongPasswordDelete = Invoke-Api -Method DELETE -Path '/auth/account' -Token $tokens[$deviceA] -Body @{
+            Password = "$password-not"; ConfirmEmail = $email
+        }
+        Confirm-That 'deletion with the wrong password is 401' ($wrongPasswordDelete.Status -eq 401) "status $($wrongPasswordDelete.Status): $($wrongPasswordDelete.Text)"
+
+        $deleted = Invoke-Api -Method DELETE -Path '/auth/account' -Token $tokens[$deviceA] -Body @{
+            Password = $password; ConfirmEmail = $email
+        }
+        Confirm-That 'deletion returns 204' ($deleted.Status -eq 204) "status $($deleted.Status): $($deleted.Text)"
+
+        # Revocation, in a real container, with the cache at whatever the deployment configured: the
+        # endpoint evicts its own keys after the write commits, so this is immediate rather than lagging
+        # Auth__StampCacheSeconds. If these three ever start needing a sleep, that eviction is broken.
+        Confirm-That "the deleting device's token is dead" ((Invoke-Api -Path '/auth/whoami' -Token $tokens[$deviceA]).Status -eq 401)
+        Confirm-That "the other device's token is dead too" ((Invoke-Api -Path '/sync/pull' -Token $tokens[$deviceB]).Status -eq 401)
+        $goneLogin = Invoke-Api -Method POST -Path '/auth/login' -Body @{ Email = $email; Password = $password; DeviceId = $deviceA }
+        Confirm-That 'the credentials no longer sign in' ($goneLogin.Status -eq 401) "status $($goneLogin.Status): $($goneLogin.Text)"
+    }
+
     Write-Host ''
     Write-Host "SMOKE TEST PASSED against $BaseUrl" -ForegroundColor Green
-    Write-Host "      project $projectId is now in the account; docker compose down -v drops it" -ForegroundColor DarkGray
+    if (-not $KeepAccount) {
+        Write-Host "      nothing left behind: the throwaway account it created is deleted" -ForegroundColor DarkGray
+    }
 } catch {
     Write-Host ''
     Write-Host "SMOKE TEST FAILED: $($_.Exception.Message)" -ForegroundColor Red
+    if ($email) {
+        Write-Host "      the throwaway account $email may still exist -- delete it with DELETE /auth/account, or drop the volume" -ForegroundColor DarkGray
+    }
     $exitCode = 1
 } finally {
     if ($Down) {
