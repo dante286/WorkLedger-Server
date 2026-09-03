@@ -19,14 +19,14 @@ public class WorkLedgerDbContextTests(PostgresFixture fixture)
     [Fact]
     public async Task Project_RoundTrips_BySyncId_WithServerStampedUpdatedAt()
     {
-        var account = await CreateAccountAsync();
+        var user = await CreateUserAsync();
         var syncId = Guid.NewGuid();
 
         using (var writeContext = fixture.CreateContext())
         {
             writeContext.Projects.Add(new Project
             {
-                AccountId = account.Id,
+                UserId = user.Id,
                 SyncId = syncId,
                 Version = 1,
                 OriginDeviceId = "device-a",
@@ -37,7 +37,7 @@ public class WorkLedgerDbContextTests(PostgresFixture fixture)
         }
 
         using var readContext = fixture.CreateContext();
-        var loaded = await readContext.Projects.SingleAsync(p => p.AccountId == account.Id && p.SyncId == syncId);
+        var loaded = await readContext.Projects.SingleAsync(p => p.UserId == user.Id && p.SyncId == syncId);
 
         Assert.Equal("Test Project", loaded.Name);
         Assert.NotEqual(default, loaded.UpdatedAt);
@@ -45,29 +45,29 @@ public class WorkLedgerDbContextTests(PostgresFixture fixture)
     }
 
     [Fact]
-    public async Task DuplicateSyncId_ForSameAccount_IsRejectedByUniqueIndex()
+    public async Task DuplicateSyncId_ForSameUser_IsRejectedByUniqueIndex()
     {
-        var account = await CreateAccountAsync();
+        var user = await CreateUserAsync();
         var syncId = Guid.NewGuid();
 
         using (var firstContext = fixture.CreateContext())
         {
-            firstContext.Projects.Add(new Project { AccountId = account.Id, SyncId = syncId, Version = 1, Name = "First" });
+            firstContext.Projects.Add(new Project { UserId = user.Id, SyncId = syncId, Version = 1, Name = "First" });
             await firstContext.SaveChangesAsync();
         }
 
         using var secondContext = fixture.CreateContext();
-        secondContext.Projects.Add(new Project { AccountId = account.Id, SyncId = syncId, Version = 1, Name = "Duplicate" });
+        secondContext.Projects.Add(new Project { UserId = user.Id, SyncId = syncId, Version = 1, Name = "Duplicate" });
 
         await Assert.ThrowsAsync<DbUpdateException>(() => secondContext.SaveChangesAsync());
     }
 
-    private async Task<Account> CreateAccountAsync()
+    private async Task<User> CreateUserAsync()
     {
         using var context = fixture.CreateContext();
-        var account = new Account { Name = $"test-{Guid.NewGuid()}" };
-        context.Accounts.Add(account);
+        var user = new User { DisplayName = $"test-{Guid.NewGuid()}" };
+        context.Users.Add(user);
         await context.SaveChangesAsync();
-        return account;
+        return user;
     }
 }

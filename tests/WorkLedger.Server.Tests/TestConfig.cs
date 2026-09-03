@@ -5,10 +5,10 @@ namespace WorkLedger.Server.Tests;
 /// missing, so every WebApplicationFactory&lt;Program&gt; in tests — even ones unrelated to auth — must
 /// supply these.
 /// <para>
-/// The JWT values are constants rather than literals in the dictionary because a test that needs a
-/// token for an account <c>/auth/register-device</c> will not issue one (that endpoint always binds to
-/// the single seeded v1 account) has to sign it with the same key the host validates against — see
-/// ReportEndpointTests.
+/// The JWT values are constants rather than literals in the dictionary because tests mint their own
+/// tokens and must sign them with the same key the host validates against — see
+/// AuthWebAppFixture.EnrollDeviceAsync. There is no <c>Account:Name</c> here any more: S6 removed the
+/// startup seed that read it, so a test host starts with zero users.
 /// </para>
 /// </summary>
 internal static class TestConfig
@@ -34,7 +34,6 @@ internal static class TestConfig
         ["Jwt:Issuer"] = JwtIssuer,
         ["Jwt:Audience"] = JwtAudience,
         ["Bootstrap:Secret"] = BootstrapSecret,
-        ["Account:Name"] = "Test Account",
         ["ConnectionStrings:Postgres"] = UnusedConnectionString,
     };
 }

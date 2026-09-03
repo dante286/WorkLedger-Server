@@ -5,7 +5,7 @@ namespace WorkLedger.Server.Reports;
 
 /// <summary>
 /// The three report endpoints. None is marked AllowAnonymous, so Program.cs's authorization fallback
-/// policy protects them; the account they report on is the token's, never anything in the URL.
+/// policy protects them; the user they report on is the token's, never anything in the URL.
 /// <para>
 /// Route ids are <b>SyncIds</b> (the cross-device Guid), not the server's internal int Ids — the
 /// <c>:guid</c> route constraint means a caller that sends an int gets a 404 rather than reaching a
@@ -39,7 +39,7 @@ internal static class ReportEndpoints
                 return InvalidDate("weekOf", weekOf);
             }
 
-            var report = await reports.WeeklyAsync(currentContext.AccountId, parsedWeekOf, cancellationToken);
+            var report = await reports.WeeklyAsync(currentContext.UserId, parsedWeekOf, cancellationToken);
 
             return resolvedFormat == ReportFormat.Csv
                 ? Csv(ReportCsv.Weekly(report.Grid), $"workledger-weekly-{report.Dto.WeekStart:yyyy-MM-dd}.csv")
@@ -66,7 +66,7 @@ internal static class ReportEndpoints
                 return error;
             }
 
-            var report = await reports.ProjectAsync(currentContext.AccountId, projectSyncId, range, cancellationToken);
+            var report = await reports.ProjectAsync(currentContext.UserId, projectSyncId, range, cancellationToken);
             if (report is null)
             {
                 return Results.NotFound(new { error = $"No project with SyncId '{projectSyncId}'." });
@@ -97,7 +97,7 @@ internal static class ReportEndpoints
                 return error;
             }
 
-            var report = await reports.TaskAsync(currentContext.AccountId, taskSyncId, range, cancellationToken);
+            var report = await reports.TaskAsync(currentContext.UserId, taskSyncId, range, cancellationToken);
             if (report is null)
             {
                 return Results.NotFound(new { error = $"No task with SyncId '{taskSyncId}'." });

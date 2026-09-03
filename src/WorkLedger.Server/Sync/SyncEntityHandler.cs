@@ -23,12 +23,12 @@ internal interface ISyncEntityHandler
     /// </summary>
     int OrderRank { get; }
 
-    Task<IVersionedSyncEntity?> FindAsync(WorkLedgerDbContext db, int accountId, Guid syncId, CancellationToken cancellationToken);
+    Task<IVersionedSyncEntity?> FindAsync(WorkLedgerDbContext db, int userId, Guid syncId, CancellationToken cancellationToken);
 
     Task<List<IVersionedSyncEntity>> QueryChangedAsync(
-        WorkLedgerDbContext db, int accountId, DateTime since, string callerDeviceId, CancellationToken cancellationToken);
+        WorkLedgerDbContext db, int userId, DateTime since, string callerDeviceId, CancellationToken cancellationToken);
 
-    IVersionedSyncEntity NewRow(int accountId, Guid syncId);
+    IVersionedSyncEntity NewRow(int userId, Guid syncId);
 
     void Add(WorkLedgerDbContext db, IVersionedSyncEntity entity);
 
@@ -50,7 +50,7 @@ internal interface ISyncEntityHandler
 /// <summary>
 /// The one implementation, closed over a concrete (entity, payload) pair by the registrations in
 /// <see cref="SyncEntityHandlers"/>. The queries are supplied as delegates over the concrete DbSet
-/// rather than written generically here, so every account-scoped WHERE clause is visible at the
+/// rather than written generically here, so every user-scoped WHERE clause is visible at the
 /// registration site — this is the tenancy boundary, and it should be readable without chasing
 /// generics.
 /// </summary>
@@ -70,20 +70,20 @@ internal sealed class SyncEntityHandler<TEntity, TPayload>(
     public int OrderRank { get; } = orderRank;
 
     public async Task<IVersionedSyncEntity?> FindAsync(
-        WorkLedgerDbContext db, int accountId, Guid syncId, CancellationToken cancellationToken)
-        => await find(db, accountId, syncId, cancellationToken);
+        WorkLedgerDbContext db, int userId, Guid syncId, CancellationToken cancellationToken)
+        => await find(db, userId, syncId, cancellationToken);
 
     public async Task<List<IVersionedSyncEntity>> QueryChangedAsync(
-        WorkLedgerDbContext db, int accountId, DateTime since, string callerDeviceId, CancellationToken cancellationToken)
+        WorkLedgerDbContext db, int userId, DateTime since, string callerDeviceId, CancellationToken cancellationToken)
     {
-        var rows = await queryChanged(db, accountId, since, callerDeviceId)
+        var rows = await queryChanged(db, userId, since, callerDeviceId)
             .OrderBy(e => e.UpdatedAt)
             .ToListAsync(cancellationToken);
         return [.. rows.Cast<IVersionedSyncEntity>()];
     }
 
-    public IVersionedSyncEntity NewRow(int accountId, Guid syncId)
-        => new TEntity { AccountId = accountId, SyncId = syncId };
+    public IVersionedSyncEntity NewRow(int userId, Guid syncId)
+        => new TEntity { UserId = userId, SyncId = syncId };
 
     public void Add(WorkLedgerDbContext db, IVersionedSyncEntity entity) => db.Add((TEntity)entity);
 
@@ -134,11 +134,11 @@ internal static class SyncEntityHandlers
             [SyncEntityTypes.Project] = new SyncEntityHandler<Project, ProjectPayload>(
                 SyncEntityTypes.Project,
                 orderRank: 0,
-                find: (db, accountId, syncId, ct) =>
-                    db.Projects.SingleOrDefaultAsync(p => p.AccountId == accountId && p.SyncId == syncId, ct),
-                queryChanged: (db, accountId, since, callerDeviceId) =>
+                find: (db, userId, syncId, ct) =>
+                    db.Projects.SingleOrDefaultAsync(p => p.UserId == userId && p.SyncId == syncId, ct),
+                queryChanged: (db, userId, since, callerDeviceId) =>
                     db.Projects.Where(p =>
-                        p.AccountId == accountId &&
+                        p.UserId == userId &&
                         p.UpdatedAt > since &&
                         (p.OriginDeviceId == null || p.OriginDeviceId != callerDeviceId)),
                 apply: (entity, payload) =>
@@ -161,11 +161,11 @@ internal static class SyncEntityHandlers
             [SyncEntityTypes.Task] = new SyncEntityHandler<TaskItem, TaskItemPayload>(
                 SyncEntityTypes.Task,
                 orderRank: 1,
-                find: (db, accountId, syncId, ct) =>
-                    db.TaskItems.SingleOrDefaultAsync(t => t.AccountId == accountId && t.SyncId == syncId, ct),
-                queryChanged: (db, accountId, since, callerDeviceId) =>
+                find: (db, userId, syncId, ct) =>
+                    db.TaskItems.SingleOrDefaultAsync(t => t.UserId == userId && t.SyncId == syncId, ct),
+                queryChanged: (db, userId, since, callerDeviceId) =>
                     db.TaskItems.Where(t =>
-                        t.AccountId == accountId &&
+                        t.UserId == userId &&
                         t.UpdatedAt > since &&
                         (t.OriginDeviceId == null || t.OriginDeviceId != callerDeviceId)),
                 apply: (entity, payload) =>
@@ -197,11 +197,11 @@ internal static class SyncEntityHandlers
             [SyncEntityTypes.TimeEntry] = new SyncEntityHandler<TimeEntry, TimeEntryPayload>(
                 SyncEntityTypes.TimeEntry,
                 orderRank: 2,
-                find: (db, accountId, syncId, ct) =>
-                    db.TimeEntries.SingleOrDefaultAsync(t => t.AccountId == accountId && t.SyncId == syncId, ct),
-                queryChanged: (db, accountId, since, callerDeviceId) =>
+                find: (db, userId, syncId, ct) =>
+                    db.TimeEntries.SingleOrDefaultAsync(t => t.UserId == userId && t.SyncId == syncId, ct),
+                queryChanged: (db, userId, since, callerDeviceId) =>
                     db.TimeEntries.Where(t =>
-                        t.AccountId == accountId &&
+                        t.UserId == userId &&
                         t.UpdatedAt > since &&
                         (t.OriginDeviceId == null || t.OriginDeviceId != callerDeviceId)),
                 apply: (entity, payload) =>

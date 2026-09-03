@@ -22,26 +22,6 @@ namespace WorkLedger.Server.Data.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
-            modelBuilder.Entity("WorkLedger.Server.Data.Entities.Account", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("timestamptz");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("Accounts");
-                });
-
             modelBuilder.Entity("WorkLedger.Server.Data.Entities.Device", b =>
                 {
                     b.Property<int>("Id")
@@ -49,9 +29,6 @@ namespace WorkLedger.Server.Data.Migrations
                         .HasColumnType("integer");
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<int>("AccountId")
-                        .HasColumnType("integer");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamptz");
@@ -66,9 +43,12 @@ namespace WorkLedger.Server.Data.Migrations
                     b.Property<DateTime?>("LastSeenUtc")
                         .HasColumnType("timestamptz");
 
+                    b.Property<int>("UserId")
+                        .HasColumnType("integer");
+
                     b.HasKey("Id");
 
-                    b.HasIndex("AccountId", "DeviceId")
+                    b.HasIndex("UserId", "DeviceId")
                         .IsUnique();
 
                     b.ToTable("Devices");
@@ -81,9 +61,6 @@ namespace WorkLedger.Server.Data.Migrations
                         .HasColumnType("integer");
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<int>("AccountId")
-                        .HasColumnType("integer");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamptz");
@@ -109,15 +86,18 @@ namespace WorkLedger.Server.Data.Migrations
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("timestamptz");
 
+                    b.Property<int>("UserId")
+                        .HasColumnType("integer");
+
                     b.Property<int>("Version")
                         .HasColumnType("integer");
 
                     b.HasKey("Id");
 
-                    b.HasIndex("AccountId", "SyncId")
+                    b.HasIndex("UserId", "SyncId")
                         .IsUnique();
 
-                    b.HasIndex("AccountId", "UpdatedAt");
+                    b.HasIndex("UserId", "UpdatedAt");
 
                     b.ToTable("Projects");
                 });
@@ -129,9 +109,6 @@ namespace WorkLedger.Server.Data.Migrations
                         .HasColumnType("integer");
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<int>("AccountId")
-                        .HasColumnType("integer");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamptz");
@@ -163,17 +140,20 @@ namespace WorkLedger.Server.Data.Migrations
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("timestamptz");
 
+                    b.Property<int>("UserId")
+                        .HasColumnType("integer");
+
                     b.Property<int>("Version")
                         .HasColumnType("integer");
 
                     b.HasKey("Id");
 
-                    b.HasIndex("AccountId", "ProjectSyncId");
+                    b.HasIndex("UserId", "ProjectSyncId");
 
-                    b.HasIndex("AccountId", "SyncId")
+                    b.HasIndex("UserId", "SyncId")
                         .IsUnique();
 
-                    b.HasIndex("AccountId", "UpdatedAt");
+                    b.HasIndex("UserId", "UpdatedAt");
 
                     b.ToTable("TaskItems");
                 });
@@ -185,9 +165,6 @@ namespace WorkLedger.Server.Data.Migrations
                         .HasColumnType("integer");
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<int>("AccountId")
-                        .HasColumnType("integer");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamptz");
@@ -216,53 +193,95 @@ namespace WorkLedger.Server.Data.Migrations
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("timestamptz");
 
+                    b.Property<int>("UserId")
+                        .HasColumnType("integer");
+
                     b.Property<int>("Version")
                         .HasColumnType("integer");
 
                     b.HasKey("Id");
 
-                    b.HasIndex("AccountId", "SyncId")
+                    b.HasIndex("UserId", "SyncId")
                         .IsUnique();
 
-                    b.HasIndex("AccountId", "TaskSyncId");
+                    b.HasIndex("UserId", "TaskSyncId");
 
-                    b.HasIndex("AccountId", "UpdatedAt");
+                    b.HasIndex("UserId", "UpdatedAt");
 
                     b.ToTable("TimeEntries");
                 });
 
+            modelBuilder.Entity("WorkLedger.Server.Data.Entities.User", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamptz");
+
+                    b.Property<string>("DisplayName")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Email")
+                        .HasColumnType("text");
+
+                    b.Property<string>("NormalizedEmail")
+                        .HasColumnType("text");
+
+                    b.Property<string>("PasswordHash")
+                        .HasColumnType("text");
+
+                    b.Property<string>("SecurityStamp")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("timestamptz");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("NormalizedEmail")
+                        .IsUnique()
+                        .HasFilter("\"NormalizedEmail\" IS NOT NULL");
+
+                    b.ToTable("Users");
+                });
+
             modelBuilder.Entity("WorkLedger.Server.Data.Entities.Device", b =>
                 {
-                    b.HasOne("WorkLedger.Server.Data.Entities.Account", null)
+                    b.HasOne("WorkLedger.Server.Data.Entities.User", null)
                         .WithMany()
-                        .HasForeignKey("AccountId")
+                        .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });
 
             modelBuilder.Entity("WorkLedger.Server.Data.Entities.Project", b =>
                 {
-                    b.HasOne("WorkLedger.Server.Data.Entities.Account", null)
+                    b.HasOne("WorkLedger.Server.Data.Entities.User", null)
                         .WithMany()
-                        .HasForeignKey("AccountId")
+                        .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });
 
             modelBuilder.Entity("WorkLedger.Server.Data.Entities.TaskItem", b =>
                 {
-                    b.HasOne("WorkLedger.Server.Data.Entities.Account", null)
+                    b.HasOne("WorkLedger.Server.Data.Entities.User", null)
                         .WithMany()
-                        .HasForeignKey("AccountId")
+                        .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });
 
             modelBuilder.Entity("WorkLedger.Server.Data.Entities.TimeEntry", b =>
                 {
-                    b.HasOne("WorkLedger.Server.Data.Entities.Account", null)
+                    b.HasOne("WorkLedger.Server.Data.Entities.User", null)
                         .WithMany()
-                        .HasForeignKey("AccountId")
+                        .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });

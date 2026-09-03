@@ -1,9 +1,7 @@
 using System.Net;
-using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
-using WorkLedger.Contracts.Auth;
 using WorkLedger.Contracts.Payloads;
 using WorkLedger.Contracts.Sync;
 using WorkLedger.Server.Data.Entities;
@@ -12,10 +10,15 @@ using WorkLedger.Server.Tests.Auth;
 namespace WorkLedger.Server.Tests.Sync;
 
 /// <summary>
-/// Two devices under the shared v1 account, exercised through the real HTTP surface against a real
-/// Postgres. Tests share one account (the server is single-account by design), so each test uses
-/// fresh Guids and takes its pull cursor from a baseline pull rather than assuming an empty
-/// database.
+/// Devices under one shared user, exercised through the real HTTP surface against a real Postgres.
+/// Tests share that user, so each uses fresh Guids and takes its pull cursor from a baseline pull
+/// rather than assuming an empty database.
+/// <para>
+/// The user is created here rather than seeded by the host (S6 seeds nothing) and devices are enrolled
+/// through the fixture rather than through <c>POST /auth/register-device</c> — see
+/// <see cref="AuthWebAppFixture"/> for why. Every merge and scope assertion below is unchanged from S3;
+/// only where the token comes from has moved.
+/// </para>
 /// </summary>
 [Collection(nameof(AuthCollection))]
 public class SyncEndpointTests(AuthWebAppFixture fixture)
@@ -57,7 +60,7 @@ public class SyncEndpointTests(AuthWebAppFixture fixture)
     }
 
     [Fact]
-    public async Task Push_NewCreate_InsertsRowScopedToTheAccount()
+    public async Task Push_NewCreate_InsertsRowScopedToTheUser()
     {
         var device = await NewDeviceAsync();
         var syncId = Guid.NewGuid();
@@ -71,7 +74,7 @@ public class SyncEndpointTests(AuthWebAppFixture fixture)
         Assert.Equal(1, row.Version);
         Assert.Equal(device.DeviceId, row.OriginDeviceId);
         Assert.False(row.IsDeleted);
-        Assert.True(row.AccountId > 0);
+        Assert.True(row.UserId > 0);
         Assert.Equal("Project", row.Name);
 
         // Rule H: an Unspecified-kind timestamp is stored as the same instant in UTC, not shifted
@@ -337,20 +340,20 @@ public class SyncEndpointTests(AuthWebAppFixture fixture)
     }
 
     [Fact]
-    public async Task Pull_NeverReturnsAnotherAccountsData()
+    public async Task Pull_NeverReturnsAnotherUsersData()
     {
         var device = await NewDeviceAsync();
         var foreignSyncId = Guid.NewGuid();
 
         using (var db = fixture.CreateDbContext())
         {
-            var foreignAccount = new Account { Name = "Someone else's account" };
-            db.Accounts.Add(foreignAccount);
+            var foreignUser = new User { DisplayName = "Someone else" };
+            db.Users.Add(foreignUser);
             await db.SaveChangesAsync();
 
             db.Projects.Add(new Project
             {
-                AccountId = foreignAccount.Id,
+                UserId = foreignUser.Id,
                 SyncId = foreignSyncId,
                 Version = 1,
                 OriginDeviceId = Guid.NewGuid().ToString(),
@@ -360,7 +363,7 @@ public class SyncEndpointTests(AuthWebAppFixture fixture)
             await db.SaveChangesAsync();
         }
 
-        // No cursor at all: the widest possible pull, which is exactly when a missing account filter
+        // No cursor at all: the widest possible pull, which is exactly when a missing user filter
         // would show up.
         var pull = await PullAsync(device);
 
@@ -422,7 +425,7 @@ public class SyncEndpointTests(AuthWebAppFixture fixture)
     }
 
     [Fact]
-    public async Task Pull_WithNoSince_ReturnsEverythingForTheAccount()
+    public async Task Pull_WithNoSince_ReturnsEverythingForTheUser()
     {
         var author = await NewDeviceAsync();
         var observer = await NewDeviceAsync();
@@ -559,24 +562,31 @@ public class SyncEndpointTests(AuthWebAppFixture fixture)
 
     private sealed record TestDevice(string DeviceId, HttpClient Client);
 
+    /// <summary>
+    /// The user every device in this class enrolls under, created once. Devices must share a user for
+    /// the cross-device assertions to mean anything: an author and an observer on different users would
+    /// pass a pull test by tenancy isolation rather than by the merge working.
+    /// </summary>
+    private static readonly SemaphoreSlim SharedUserGate = new(1, 1);
+    private static int _sharedUserId;
+
     private async Task<TestDevice> NewDeviceAsync()
     {
-        var deviceId = Guid.NewGuid().ToString();
-        var client = fixture.Factory.CreateClient();
-
-        using var request = new HttpRequestMessage(HttpMethod.Post, "/auth/register-device")
+        await SharedUserGate.WaitAsync();
+        try
         {
-            Content = JsonContent.Create(new { deviceId, label = "sync-test" }),
-        };
-        request.Headers.Add("X-Bootstrap-Secret", fixture.BootstrapSecret);
+            if (_sharedUserId == 0)
+            {
+                _sharedUserId = await fixture.NewUserAsync("sync");
+            }
+        }
+        finally
+        {
+            SharedUserGate.Release();
+        }
 
-        var response = await client.SendAsync(request);
-        response.EnsureSuccessStatusCode();
-
-        var body = await response.Content.ReadFromJsonAsync<RegisterDeviceResponse>();
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", body!.Token);
-
-        return new TestDevice(deviceId, client);
+        var device = await fixture.EnrollDeviceAsync(_sharedUserId, "sync-test");
+        return new TestDevice(device.DeviceId, device.Client);
     }
 
     private static async Task<SyncPushResponse> PushAsync(TestDevice device, params SyncChangeDto[] changes)

@@ -44,10 +44,11 @@ Three projects (`WorkLedger-Server.slnx`), .NET 10, Minimal APIs, EF Core + Npgs
   free of server-only packages: the client compiles these same files.
 - **`src/WorkLedger.Server`** — everything wired in `Program.cs` (no controllers): DI, JWT bearer, a
   `FallbackPolicy` that makes every endpoint authenticated unless it opts out with `.AllowAnonymous()`
-  (`/`, `/health`, `/auth/register-device`), then `MapSyncEndpoints()` / `MapReportEndpoints()`.
+  (`/`, `/health`, and everything in `Auth/AuthEndpoints.cs` bar `/auth/whoami`), then
+  `MapAuthEndpoints()` / `MapSyncEndpoints()` / `MapReportEndpoints()`.
 - **`tests/WorkLedger.Server.Tests`** — xUnit, `WebApplicationFactory<Program>` + Testcontainers.
 
-`plans/` holds the S0–S5 build plans (all shipped) and is the design record —
+`plans/` holds the S0–S6 build plans (S0–S6 shipped; S7–S9 pending) and is the design record —
 `plans/README.md` explains the cross-repo contract handoff and house style.
 
 ### Deployment (`Dockerfile`, `docker-compose.yml`)
@@ -65,13 +66,21 @@ document deployment behaviour rather than here. Three things that bite when edit
 - `scripts/smoke-test.ps1` is the only test that exercises the deployment (image, compose wiring,
   migrate-on-boot, a container-minted token). It writes real rows and does not clean up.
 
-### Tenancy: AccountId always comes from the token
+### Tenancy: UserId always comes from the token
 
-v1 is single-account/multi-device: one seeded `Account` row, many `Device` rows. `ICurrentContext`
-reads `account_id`/`device_id` from JWT claims; **nothing in a request body or URL may widen scope**.
-Every sync and report query filters on `AccountId`. Ids exposed in routes and payloads are cross-device
-`SyncId` Guids, never the server's internal `int Id` — a route with an unknown or other-account SyncId
-is a 404.
+The user account is the top of the tenancy tree (S6): one `User` row, many `Device` rows.
+`ICurrentContext` reads `user_id`/`device_id` from JWT claims; **nothing in a request body or URL may
+widen scope**. Every sync and report query filters on `UserId`. Ids exposed in routes and payloads are
+cross-device `SyncId` Guids, never the server's internal `int Id` — a route with an unknown or
+other-user SyncId is a 404.
+
+Nothing is seeded: a fresh database has zero users, and the first `POST /auth/register` creates one.
+A `User` row whose `PasswordHash` is null is the **unclaimed pre-S6 tenant** awaiting
+`POST /auth/claim`; it can never authenticate, and that endpoint is the column's only writer. Read
+`User`'s XML doc before treating those nullable credential columns as an oversight.
+
+`/auth/register-device` is the only token source until S7 adds `POST /auth/login`, and it 410s once
+more than one user exists rather than guessing which account a device belongs to.
 
 ### Sync (`src/WorkLedger.Server/Sync/`)
 
@@ -134,8 +143,12 @@ own repo). Consequences:
   the *client's* own constants and payload shapes. Nothing automatically detects that the copy has fallen
   behind this repo.
 - **Known drift as of this writing:** the copy is pinned at server commit `3e6e955`; since then this repo
-  added `SyncItemResult.AuthoritativeOperation` (WL-98) and `Reports/ReportDtos.cs`, neither of which the
-  client has. Re-check with `git log --oneline <pinned-commit>..HEAD -- src/WorkLedger.Contracts`.
+  added `SyncItemResult.AuthoritativeOperation` (WL-98), `Reports/ReportDtos.cs`, and S6's account
+  contract — `WhoAmIResponse.AccountId` renamed to `UserId` (a breaking change), plus the new
+  `RegisterUserRequest`, `UserSummary` and `AuthCapabilitiesResponse`. None of it is on the client.
+  **S9 re-vendors all of it in one pass**, deliberately: S6–S8 each change `WorkLedger.Contracts`, and
+  re-taking the copy three times would hand the client three breaking updates instead of one. Re-check
+  with `git log --oneline <pinned-commit>..HEAD -- src/WorkLedger.Contracts`.
 
 ### Server comments that may have gone stale
 

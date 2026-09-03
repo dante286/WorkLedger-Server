@@ -2,16 +2,16 @@ using System.Security.Claims;
 
 namespace WorkLedger.Server.Auth;
 
-/// <summary>(AccountId, DeviceId) resolved from the caller's JWT claims — see JwtTokenService.</summary>
+/// <summary>(UserId, DeviceId) resolved from the caller's JWT claims — see JwtTokenService.</summary>
 public interface ICurrentContext
 {
-    int AccountId { get; }
+    int UserId { get; }
     string DeviceId { get; }
 }
 
 public sealed class CurrentContext(IHttpContextAccessor httpContextAccessor) : ICurrentContext
 {
-    public int AccountId => int.Parse(RequireClaim("account_id"));
+    public int UserId => int.Parse(RequireClaim("user_id"));
 
     public string DeviceId => RequireClaim("device_id");
 

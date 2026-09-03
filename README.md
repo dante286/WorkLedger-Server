@@ -1,7 +1,7 @@
 # WorkLedger Server
 
 The backend for [WorkLedger](https://github.com/dante286/WorkLedger-Client): it holds the authoritative
-copy of an account's projects, tasks and time entries, reconciles the changes each device pushes, and
+copy of a user's projects, tasks and time entries, reconciles the changes each device pushes, and
 computes the cross-device rollups no single device can. Self-hosted by design — one `docker compose up`
 on a homelab box or a small VPS, with your data in a Postgres volume you own and back up.
 
@@ -27,15 +27,17 @@ Two properties shape everything else:
 
 - **Every endpoint is authenticated by default.** `Program.cs` installs an authorization
   `FallbackPolicy` requiring an authenticated user, so an endpoint is protected unless it explicitly
-  opts out with `.AllowAnonymous()` — only `/`, `/health` and `/auth/register-device` do. Adding an
-  endpoint cannot accidentally leave it open.
-- **Scope always comes from the token.** `ICurrentContext` reads `account_id`/`device_id` out of the
-  JWT claims, and every sync and report query filters on that account. Nothing in a request body or URL
+  opts out with `.AllowAnonymous()` — only `/`, `/health` and the account endpoints in
+  `Auth/AuthEndpoints.cs` do. Adding an endpoint cannot accidentally leave it open.
+- **Scope always comes from the token.** `ICurrentContext` reads `user_id`/`device_id` out of the
+  JWT claims, and every sync and report query filters on that user. Nothing in a request body or URL
   can widen it. Ids in routes and payloads are cross-device `SyncId` Guids, never the server's internal
-  int ids, so an id belonging to another account is simply a 404.
+  int ids, so an id belonging to another user is simply a 404.
 
-v1 is single-account / multi-device: one `Account` row (seeded on first boot) and one `Device` row per
-registered device.
+A **user account is the top of the tenancy tree**: one `User` row owns many `Device` rows, and every
+device syncs the same projects, tasks and time entries back under that user. Registration is gated on
+the `Bootstrap__Secret` signup secret and can be switched off entirely with
+`Auth__RegistrationEnabled=false`.
 
 ## Quickstart: self-hosted with Docker Compose
 
@@ -80,7 +82,7 @@ curl -X POST http://localhost:8080/auth/register-device \
 # {"token":"eyJ...","expiresAtUtc":"2027-..."}
 
 curl http://localhost:8080/auth/whoami -H "Authorization: Bearer $token"
-# {"accountId":1,"deviceId":"laptop-01"}
+# {"userId":1,"deviceId":"laptop-01"}
 ```
 
 `deviceId` is the client's own stable device identifier; re-registering the same one refreshes its token
@@ -96,7 +98,7 @@ default) and there is no refresh or revocation in v1 — see
 | `GET /` | none | Name and running version (the image's `VERSION` build arg). |
 | `GET /health` | none | Liveness. Touches no database, which is why it is also the container's `HEALTHCHECK`. |
 | `POST /auth/register-device` | `X-Bootstrap-Secret` header | Enrol a device; returns a JWT and its expiry. |
-| `GET /auth/whoami` | bearer | The account and device the caller's token resolves to. |
+| `GET /auth/whoami` | bearer | The user and device the caller's token resolves to. |
 | `POST /sync/push` | bearer | Submit a batch of create/update/delete changes; returns one result per change, in request order. |
 | `GET /sync/pull?since=<iso-8601>` | bearer | Changes from other devices with `UpdatedAt > since`. Omit `since` for everything. |
 | `GET /reports/weekly?weekOf=<yyyy-MM-dd>` | bearer | One ISO week (Monday–Sunday, UTC), account-wide. |

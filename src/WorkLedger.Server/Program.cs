@@ -1,14 +1,11 @@
 using System.Reflection;
-using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
-using WorkLedger.Contracts.Auth;
 using WorkLedger.Server.Auth;
 using WorkLedger.Server.Data;
-using WorkLedger.Server.Data.Entities;
 using WorkLedger.Server.Reports;
 using WorkLedger.Server.Sync;
 
@@ -63,7 +60,9 @@ builder.Services.AddSingleton(sp =>
     return new BootstrapOptions(secret);
 });
 
+builder.Services.AddSingleton(sp => AuthOptions.Resolve(sp.GetRequiredService<IConfiguration>()));
 builder.Services.AddSingleton<JwtTokenService>();
+builder.Services.AddSingleton<PasswordService>();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentContext, CurrentContext>();
 builder.Services.AddScoped<SyncService>();
@@ -90,7 +89,8 @@ builder.Services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationSc
 
 builder.Services.AddAuthorization(options =>
 {
-    // Protected by default — endpoints opt out with .AllowAnonymous() (see /, /health, /auth/register-device).
+    // Protected by default — endpoints opt out with .AllowAnonymous() (see /, /health, and everything in
+    // Auth/AuthEndpoints.cs except /auth/whoami).
     options.FallbackPolicy = new AuthorizationPolicyBuilder()
         .RequireAuthenticatedUser()
         .Build();
@@ -109,13 +109,12 @@ using (var validationScope = app.Services.CreateScope())
     validationScope.ServiceProvider.GetRequiredService<PostgresConnection>();
 }
 
+// Migrate only. Nothing is seeded: from S6 a fresh database starts with zero users and the first
+// POST /auth/register creates one, so the old Account:Name config read is gone with the seed it fed.
 if (app.Configuration.GetValue("Database:MigrateOnStartup", true))
 {
-    var accountName = app.Configuration["Account:Name"] ?? "Default";
     using var scope = app.Services.CreateScope();
-    var db = scope.ServiceProvider.GetRequiredService<WorkLedgerDbContext>();
-    db.Database.Migrate();
-    await SeedV1AccountAsync(db, accountName);
+    scope.ServiceProvider.GetRequiredService<WorkLedgerDbContext>().Database.Migrate();
 }
 
 // Method, path and status only. Request.Path excludes the query string and no header is logged, which
@@ -143,68 +142,10 @@ app.MapGet("/", () => Results.Ok(new { name = "WorkLedger.Server", version })).A
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok", utc = DateTime.UtcNow })).AllowAnonymous();
 
-app.MapPost("/auth/register-device", async (
-    RegisterDeviceRequest request,
-    HttpRequest httpRequest,
-    WorkLedgerDbContext db,
-    JwtTokenService tokenService,
-    BootstrapOptions bootstrap) =>
-{
-    if (!httpRequest.Headers.TryGetValue("X-Bootstrap-Secret", out var provided) ||
-        !FixedTimeEquals(provided.ToString(), bootstrap.Secret))
-    {
-        return Results.Unauthorized();
-    }
-
-    if (string.IsNullOrWhiteSpace(request.DeviceId))
-    {
-        return Results.BadRequest(new { error = "DeviceId is required." });
-    }
-
-    // v1 is single-account — the seeded row is the only one, so the first (and only) match is authoritative.
-    var account = await db.Accounts.OrderBy(a => a.Id).FirstAsync();
-
-    var device = await db.Devices.SingleOrDefaultAsync(d => d.AccountId == account.Id && d.DeviceId == request.DeviceId);
-    var now = DateTime.UtcNow;
-    if (device is null)
-    {
-        device = new Device { AccountId = account.Id, DeviceId = request.DeviceId, Label = request.Label, LastSeenUtc = now };
-        db.Devices.Add(device);
-    }
-    else
-    {
-        if (!string.IsNullOrWhiteSpace(request.Label))
-        {
-            device.Label = request.Label;
-        }
-
-        device.LastSeenUtc = now;
-    }
-
-    await db.SaveChangesAsync();
-
-    var (token, expiresAtUtc) = tokenService.IssueToken(account.Id, device.Id, device.DeviceId);
-    return Results.Ok(new RegisterDeviceResponse(token, expiresAtUtc));
-}).AllowAnonymous();
-
-app.MapGet("/auth/whoami", (ICurrentContext currentContext) =>
-    Results.Ok(new WhoAmIResponse(currentContext.AccountId, currentContext.DeviceId)));
-
+app.MapAuthEndpoints();
 app.MapSyncEndpoints();
 app.MapReportEndpoints();
 
 app.Run();
-
-static bool FixedTimeEquals(string provided, string expected) =>
-    CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(provided), Encoding.UTF8.GetBytes(expected));
-
-static async Task SeedV1AccountAsync(WorkLedgerDbContext db, string accountName)
-{
-    if (!await db.Accounts.AnyAsync())
-    {
-        db.Accounts.Add(new Account { Name = accountName });
-        await db.SaveChangesAsync();
-    }
-}
 
 public partial class Program;
