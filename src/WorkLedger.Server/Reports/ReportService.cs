@@ -8,7 +8,7 @@ namespace WorkLedger.Server.Reports;
 /// The reporting rules, in one place. All three endpoints share them; the WHERE clause in
 /// <see cref="ReportQuery"/> is their SQL form.
 ///
-/// <para><b>1. Account scope.</b> AccountId comes from the caller's token. Nothing in a route or query
+/// <para><b>1. User scope.</b> UserId comes from the caller's token. Nothing in a route or query
 /// string can widen it.</para>
 ///
 /// <para><b>2. Tombstones are excluded — the whole chain, not just the entry.</b> A time entry counts
@@ -19,7 +19,7 @@ namespace WorkLedger.Server.Reports;
 /// <para><b>3. An entry with an unresolvable parent does not count.</b> The joins are inner joins on
 /// SyncId, so an entry whose task (or whose task's project) has not arrived on this server yet
 /// contributes nothing. This is transient — push applies parents before children, and the missing rows
-/// land on a later sync — and the alternative, an "unattributed" bucket, would mean the account total
+/// land on a later sync — and the alternative, an "unattributed" bucket, would mean the user total
 /// stopped being the sum of the per-project totals. Consistency between the views is worth more than
 /// surfacing a few seconds that are about to be attributed properly.</para>
 ///
@@ -56,12 +56,12 @@ internal sealed class ReportService(WorkLedgerDbContext db)
     /// The ISO week (Monday–Sunday, UTC) containing <paramref name="weekOf"/>, or the current week when
     /// it is null.
     /// </summary>
-    public async Task<WeeklyReport> WeeklyAsync(int accountId, DateOnly? weekOf, CancellationToken cancellationToken)
+    public async Task<WeeklyReport> WeeklyAsync(int userId, DateOnly? weekOf, CancellationToken cancellationToken)
     {
         var weekStart = ReportDates.StartOfIsoWeek(weekOf ?? DateOnly.FromDateTime(DateTime.UtcNow));
         var weekEnd = weekStart.AddDays(6);
 
-        var filter = new ReportFilter(accountId, ReportRange.Bounded(weekStart, weekEnd));
+        var filter = new ReportFilter(userId, ReportRange.Bounded(weekStart, weekEnd));
         var buckets = await _query.BucketsAsync(filter, cancellationToken);
         var running = await _query.RunningEntryCountAsync(filter, cancellationToken);
 
@@ -86,22 +86,22 @@ internal sealed class ReportService(WorkLedgerDbContext db)
 
     /// <summary>
     /// One project, with a per-task breakdown. Returns null when the project does not exist for this
-    /// account or is tombstoned — the caller turns that into a 404, which is also the answer a device
-    /// asking about another account's project gets.
+    /// user or is tombstoned — the caller turns that into a 404, which is also the answer a device
+    /// asking about another user's project gets.
     /// </summary>
     public async Task<ProjectReportDto?> ProjectAsync(
-        int accountId, Guid projectSyncId, ReportRange range, CancellationToken cancellationToken)
+        int userId, Guid projectSyncId, ReportRange range, CancellationToken cancellationToken)
     {
         var project = await db.Projects
             .AsNoTracking()
-            .SingleOrDefaultAsync(p => p.AccountId == accountId && p.SyncId == projectSyncId && !p.IsDeleted, cancellationToken);
+            .SingleOrDefaultAsync(p => p.UserId == userId && p.SyncId == projectSyncId && !p.IsDeleted, cancellationToken);
 
         if (project is null)
         {
             return null;
         }
 
-        var filter = new ReportFilter(accountId, range, ProjectSyncId: projectSyncId);
+        var filter = new ReportFilter(userId, range, ProjectSyncId: projectSyncId);
         var buckets = await _query.BucketsAsync(filter, cancellationToken);
         var running = await _query.RunningEntryCountAsync(filter, cancellationToken);
 
@@ -117,15 +117,15 @@ internal sealed class ReportService(WorkLedgerDbContext db)
 
     /// <summary>One task, with a daily breakdown. Null means 404, as above.</summary>
     public async Task<TaskReportDto?> TaskAsync(
-        int accountId, Guid taskSyncId, ReportRange range, CancellationToken cancellationToken)
+        int userId, Guid taskSyncId, ReportRange range, CancellationToken cancellationToken)
     {
         // Joined to the project the same way the aggregation does — an alive task under a tombstoned
         // project reports nothing, so answering 200 with a total of zero would be a lie about why.
         var task = await db.TaskItems
             .AsNoTracking()
-            .Where(t => t.AccountId == accountId && t.SyncId == taskSyncId && !t.IsDeleted)
+            .Where(t => t.UserId == userId && t.SyncId == taskSyncId && !t.IsDeleted)
             .Join(
-                db.Projects.AsNoTracking().Where(p => p.AccountId == accountId && !p.IsDeleted),
+                db.Projects.AsNoTracking().Where(p => p.UserId == userId && !p.IsDeleted),
                 t => t.ProjectSyncId,
                 p => p.SyncId,
                 (t, p) => new { t.Name, ProjectSyncId = p.SyncId, ProjectName = p.Name })
@@ -136,7 +136,7 @@ internal sealed class ReportService(WorkLedgerDbContext db)
             return null;
         }
 
-        var filter = new ReportFilter(accountId, range, TaskSyncId: taskSyncId);
+        var filter = new ReportFilter(userId, range, TaskSyncId: taskSyncId);
         var buckets = await _query.BucketsAsync(filter, cancellationToken);
         var running = await _query.RunningEntryCountAsync(filter, cancellationToken);
 

@@ -3,7 +3,7 @@ namespace WorkLedger.Server.Data.Entities;
 public sealed class Project : IVersionedSyncEntity
 {
     public int Id { get; set; }
-    public int AccountId { get; set; }
+    public int UserId { get; set; }
 
     public Guid SyncId { get; set; }
     public int Version { get; set; }

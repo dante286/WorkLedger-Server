@@ -8,7 +8,7 @@ namespace WorkLedger.Server.Data.Entities;
 public interface IVersionedSyncEntity
 {
     /// <summary>The tenancy boundary. Every sync query filters on this; forgetting to is a data leak.</summary>
-    int AccountId { get; set; }
+    int UserId { get; set; }
 
     Guid SyncId { get; set; }
     int Version { get; set; }

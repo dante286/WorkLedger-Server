@@ -43,7 +43,7 @@ namespace WorkLedger.Server.Sync;
 public sealed class SyncService(WorkLedgerDbContext db)
 {
     public async Task<SyncPushResponse> PushAsync(
-        SyncPushRequest request, int accountId, string callerDeviceId, CancellationToken cancellationToken)
+        SyncPushRequest request, int userId, string callerDeviceId, CancellationToken cancellationToken)
     {
         var changes = request.Changes;
         var results = new SyncItemResult[changes.Count];
@@ -61,7 +61,7 @@ public sealed class SyncService(WorkLedgerDbContext db)
 
         foreach (var (change, index) in ordered)
         {
-            results[index] = await ApplyAsync(change, accountId, cancellationToken);
+            results[index] = await ApplyAsync(change, userId, cancellationToken);
 
             // Saved per item, inside the one transaction: a later change in the same batch has to be
             // able to see an earlier one (create then update of the same entity), and EF's change
@@ -76,7 +76,7 @@ public sealed class SyncService(WorkLedgerDbContext db)
     }
 
     public async Task<SyncPullResponse> PullAsync(
-        DateTime since, int accountId, string callerDeviceId, CancellationToken cancellationToken)
+        DateTime since, int userId, string callerDeviceId, CancellationToken cancellationToken)
     {
         var changes = new List<SyncChangeDto>();
 
@@ -84,7 +84,7 @@ public sealed class SyncService(WorkLedgerDbContext db)
         // what a receiving client needs to resolve parent SyncIds as it merges.
         foreach (var handler in SyncEntityHandlers.ByEntityType.Values.OrderBy(h => h.OrderRank))
         {
-            var rows = await handler.QueryChangedAsync(db, accountId, since, callerDeviceId, cancellationToken);
+            var rows = await handler.QueryChangedAsync(db, userId, since, callerDeviceId, cancellationToken);
             changes.AddRange(rows.Select(row => ToChangeDto(handler, row)));
         }
 
@@ -94,7 +94,7 @@ public sealed class SyncService(WorkLedgerDbContext db)
         return new SyncPullResponse(changes, DateTime.UtcNow);
     }
 
-    private async Task<SyncItemResult> ApplyAsync(SyncChangeDto change, int accountId, CancellationToken cancellationToken)
+    private async Task<SyncItemResult> ApplyAsync(SyncChangeDto change, int userId, CancellationToken cancellationToken)
     {
         // Per-item validation failures fail only their own item (rule: never 500 a whole batch
         // because one row was malformed — the other 99 changes in it are perfectly good).
@@ -122,11 +122,11 @@ public sealed class SyncService(WorkLedgerDbContext db)
         }
 
         var isDelete = string.Equals(change.Operation, SyncOperations.Delete, StringComparison.OrdinalIgnoreCase);
-        var existing = await handler.FindAsync(db, accountId, change.EntityId, cancellationToken);
+        var existing = await handler.FindAsync(db, userId, change.EntityId, cancellationToken);
 
         if (existing is null)
         {
-            return Insert(handler, change, accountId, isDelete);
+            return Insert(handler, change, userId, isDelete);
         }
 
         return isDelete
@@ -135,9 +135,9 @@ public sealed class SyncService(WorkLedgerDbContext db)
     }
 
     /// <summary>Rule C — and, for a delete of an entity we have never seen, a tombstone insert.</summary>
-    private SyncItemResult Insert(ISyncEntityHandler handler, SyncChangeDto change, int accountId, bool isDelete)
+    private SyncItemResult Insert(ISyncEntityHandler handler, SyncChangeDto change, int userId, bool isDelete)
     {
-        var entity = handler.NewRow(accountId, change.EntityId);
+        var entity = handler.NewRow(userId, change.EntityId);
 
         // Seeded from the change first so a delete with no usable payload still gets a sane row;
         // the payload overwrites CreatedAt with the entity's own creation time when present.

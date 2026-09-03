@@ -6,6 +6,15 @@ using WorkLedger.Contracts.Auth;
 
 namespace WorkLedger.Server.Tests.Auth;
 
+/// <summary>
+/// The token pipeline: the fallback authorization policy, and a token resolving to the right
+/// <c>(user_id, device_id)</c> pair.
+/// <para>
+/// <c>/auth/register-device</c>'s own behaviour moved to <see cref="RegistrationEndpointTests"/> in S6,
+/// because it now depends on how many users the whole database holds and this collection's database is
+/// shared. What is left here is the plumbing every other suite's tokens ride on.
+/// </para>
+/// </summary>
 [Collection(nameof(AuthCollection))]
 public class AuthEndpointTests(AuthWebAppFixture fixture)
 {
@@ -14,6 +23,20 @@ public class AuthEndpointTests(AuthWebAppFixture fixture)
     {
         var client = fixture.Factory.CreateClient();
 
+        var response = await client.GetAsync("/auth/whoami");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ProtectedEndpoint_WithATokenSignedByTheWrongKey_Returns401()
+    {
+        var foreign = new Server.Auth.JwtTokenService(new Server.Auth.JwtOptions(
+            "a-completely-different-signing-key-0123456789", TestConfig.JwtIssuer, TestConfig.JwtAudience, 1));
+        var (token, _) = foreign.IssueToken(1, 1, "impostor");
+
+        var client = fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
         var response = await client.GetAsync("/auth/whoami");
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
@@ -30,90 +53,38 @@ public class AuthEndpointTests(AuthWebAppFixture fixture)
     }
 
     [Fact]
-    public async Task RegisterDevice_WithCorrectSecret_ReturnsSignedToken()
+    public async Task IssuedToken_ResolvesToCorrectUserAndDevice()
     {
-        var client = fixture.Factory.CreateClient();
+        var userId = await fixture.NewUserAsync("whoami");
+        var device = await fixture.EnrollDeviceAsync(userId, "whoami-test");
 
-        var token = await RegisterDeviceAsync(client, Guid.NewGuid().ToString());
-
-        Assert.False(string.IsNullOrWhiteSpace(token));
-    }
-
-    [Fact]
-    public async Task RegisterDevice_WithWrongSecret_Returns401()
-    {
-        var client = fixture.Factory.CreateClient();
-        using var request = new HttpRequestMessage(HttpMethod.Post, "/auth/register-device")
-        {
-            Content = JsonContent.Create(new { deviceId = Guid.NewGuid().ToString() }),
-        };
-        request.Headers.Add("X-Bootstrap-Secret", "definitely-wrong-secret");
-
-        var response = await client.SendAsync(request);
-
-        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
-    }
-
-    [Fact]
-    public async Task RegisterDevice_WithMissingSecret_Returns401()
-    {
-        var client = fixture.Factory.CreateClient();
-
-        var response = await client.PostAsJsonAsync("/auth/register-device", new { deviceId = Guid.NewGuid().ToString() });
-
-        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
-    }
-
-    [Fact]
-    public async Task IssuedToken_ResolvesToCorrectAccountAndDevice()
-    {
-        var client = fixture.Factory.CreateClient();
-        var deviceId = Guid.NewGuid().ToString();
-        var token = await RegisterDeviceAsync(client, deviceId);
-
-        using var request = new HttpRequestMessage(HttpMethod.Get, "/auth/whoami");
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        var response = await client.SendAsync(request);
+        var response = await device.Client.GetAsync("/auth/whoami");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<WhoAmIResponse>();
-        Assert.Equal(deviceId, body!.DeviceId);
-        Assert.True(body.AccountId > 0);
+        Assert.Equal(device.DeviceId, body!.DeviceId);
+        Assert.Equal(userId, body.UserId);
     }
 
+    /// <summary>
+    /// Two devices under one user get distinct <c>device_id</c> claims but the same <c>user_id</c> —
+    /// the shape the whole multi-device tenancy rests on.
+    /// </summary>
     [Fact]
-    public async Task RegisterDevice_ReRegisteringSameDeviceId_IsIdempotent()
+    public async Task TwoDevicesUnderOneUser_ShareTheUserButNotTheDeviceIdentity()
     {
-        var client = fixture.Factory.CreateClient();
-        var deviceId = Guid.NewGuid().ToString();
+        var userId = await fixture.NewUserAsync("pair");
+        var first = await fixture.EnrollDeviceAsync(userId, "first");
+        var second = await fixture.EnrollDeviceAsync(userId, "second");
 
-        await RegisterDeviceAsync(client, deviceId, label: "First");
-        var secondToken = await RegisterDeviceAsync(client, deviceId, label: "Renamed");
+        var firstWhoAmI = await first.Client.GetFromJsonAsync<WhoAmIResponse>("/auth/whoami");
+        var secondWhoAmI = await second.Client.GetFromJsonAsync<WhoAmIResponse>("/auth/whoami");
 
-        using var context = fixture.CreateDbContext();
-        var matches = await context.Devices.Where(d => d.DeviceId == deviceId).ToListAsync();
-        Assert.Single(matches);
-        Assert.Equal("Renamed", matches[0].Label);
+        Assert.Equal(userId, firstWhoAmI!.UserId);
+        Assert.Equal(userId, secondWhoAmI!.UserId);
+        Assert.NotEqual(firstWhoAmI.DeviceId, secondWhoAmI.DeviceId);
 
-        using var whoamiRequest = new HttpRequestMessage(HttpMethod.Get, "/auth/whoami");
-        whoamiRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", secondToken);
-        var whoamiResponse = await client.SendAsync(whoamiRequest);
-
-        Assert.Equal(HttpStatusCode.OK, whoamiResponse.StatusCode);
-    }
-
-    private async Task<string> RegisterDeviceAsync(HttpClient client, string deviceId, string? label = null)
-    {
-        using var request = new HttpRequestMessage(HttpMethod.Post, "/auth/register-device")
-        {
-            Content = JsonContent.Create(new { deviceId, label }),
-        };
-        request.Headers.Add("X-Bootstrap-Secret", fixture.BootstrapSecret);
-
-        var response = await client.SendAsync(request);
-        response.EnsureSuccessStatusCode();
-
-        var body = await response.Content.ReadFromJsonAsync<RegisterDeviceResponse>();
-        return body!.Token;
+        using var db = fixture.CreateDbContext();
+        Assert.Equal(2, await db.Devices.CountAsync(d => d.UserId == userId));
     }
 }

@@ -7,7 +7,7 @@ namespace WorkLedger.Server.Auth;
 
 public sealed class JwtTokenService(JwtOptions options)
 {
-    public (string Token, DateTime ExpiresAtUtc) IssueToken(int accountId, int deviceRowId, string deviceId)
+    public (string Token, DateTime ExpiresAtUtc) IssueToken(int userId, int deviceRowId, string deviceId)
     {
         var now = DateTime.UtcNow;
         var expiresAtUtc = now.AddDays(options.ExpiryDays);
@@ -15,7 +15,7 @@ public sealed class JwtTokenService(JwtOptions options)
         var claims = new[]
         {
             new Claim(JwtRegisteredClaimNames.Sub, deviceRowId.ToString()),
-            new Claim("account_id", accountId.ToString()),
+            new Claim("user_id", userId.ToString()),
             new Claim("device_id", deviceId),
         };
 

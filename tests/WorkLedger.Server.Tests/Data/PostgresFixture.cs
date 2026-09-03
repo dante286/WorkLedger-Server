@@ -8,7 +8,7 @@ namespace WorkLedger.Server.Tests.Data;
 /// One throwaway Postgres container per test class (via the collection below), migrated once in
 /// InitializeAsync. Each test gets its own WorkLedgerDbContext instance via CreateContext() so
 /// tests don't share a change tracker, but they do share the underlying database — tests must
-/// use their own Account row to avoid colliding with each other.
+/// use their own User row to avoid colliding with each other.
 /// </summary>
 public sealed class PostgresFixture : IAsyncLifetime
 {

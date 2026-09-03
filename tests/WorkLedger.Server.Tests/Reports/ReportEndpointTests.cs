@@ -2,7 +2,6 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using WorkLedger.Contracts.Reports;
-using WorkLedger.Server.Auth;
 using WorkLedger.Server.Data.Entities;
 using WorkLedger.Server.Tests.Auth;
 
@@ -11,22 +10,19 @@ namespace WorkLedger.Server.Tests.Reports;
 /// <summary>
 /// Reports over a real Postgres, through the real HTTP surface.
 ///
-/// <para>Unlike the sync tests, these do <b>not</b> share the seeded v1 account. A weekly report is an
-/// account-wide total, so any other test's time entries landing in the same account would show up in
-/// the number being asserted. Each test therefore provisions its own Account + Device row and signs its
-/// own token against the same key the host validates with — <c>/auth/register-device</c> cannot do this
-/// because it always binds to the single seeded account. That the endpoints accept such a token at all
-/// is the point of the isolation test below: account scope comes from the claim, not from the seed.</para>
+/// <para>Unlike the sync tests, these do <b>not</b> share one user. A weekly report is a user-wide
+/// total, so any other test's time entries landing under the same user would show up in the number
+/// being asserted. Each test therefore provisions its own user and device through the fixture, which
+/// mints a token signed with the same key the host validates against. That the endpoints accept such a
+/// token at all is the point of the isolation test below: user scope comes from the claim, and from
+/// nothing else.</para>
 ///
 /// <para>The seed week is deliberately in 2031, far from the 2026 timestamps the sync tests use, so a
-/// mistake in the account filter shows up as a wrong total here rather than passing by luck.</para>
+/// mistake in the user filter shows up as a wrong total here rather than passing by luck.</para>
 /// </summary>
 [Collection(nameof(AuthCollection))]
 public class ReportEndpointTests(AuthWebAppFixture fixture)
 {
-    private static readonly JwtTokenService Tokens = new(new JwtOptions(
-        TestConfig.JwtSigningKey, TestConfig.JwtIssuer, TestConfig.JwtAudience, ExpiryDays: 1));
-
     /// <summary>Monday of the ISO week every seeded fixture below is built around.</summary>
     private static readonly DateOnly WeekStart = new(2031, 3, 3);
 
@@ -56,16 +52,16 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
 
     /// <summary>
     /// The whole seed in one assertion set, against hand-computed numbers — see <see cref="SeedWeekAsync"/>
-    /// for what goes in. Account total, per-project, per-task and per-day all come from one aggregation,
+    /// for what goes in. User total, per-project, per-task and per-day all come from one aggregation,
     /// so checking them together is what proves they agree.
     /// </summary>
     [Fact]
     public async Task Weekly_TotalsMatchTheSeededWeek()
     {
-        var account = await NewAccountAsync();
-        var seed = await SeedWeekAsync(account);
+        var user = await NewUserAsync();
+        var seed = await SeedWeekAsync(user);
 
-        var report = await GetAsync<WeeklyReportDto>(account, $"/reports/weekly?weekOf={WeekStart:yyyy-MM-dd}");
+        var report = await GetAsync<WeeklyReportDto>(user, $"/reports/weekly?weekOf={WeekStart:yyyy-MM-dd}");
 
         Assert.Equal(WeekStart, report.WeekStart);
         Assert.Equal(WeekStart.AddDays(6), report.WeekEnd);
@@ -100,10 +96,10 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
     [Fact]
     public async Task Weekly_MergesTwoEntriesOnTheSameDayAndTask()
     {
-        var account = await NewAccountAsync();
-        await SeedWeekAsync(account);
+        var user = await NewUserAsync();
+        await SeedWeekAsync(user);
 
-        var report = await GetAsync<WeeklyReportDto>(account, $"/reports/weekly?weekOf={WeekStart:yyyy-MM-dd}");
+        var report = await GetAsync<WeeklyReportDto>(user, $"/reports/weekly?weekOf={WeekStart:yyyy-MM-dd}");
 
         // Monday holds two separate Design entries (3600 + 1800) and must report one 5400 bucket.
         Assert.Equal(5400, report.Days[0].Seconds);
@@ -117,11 +113,11 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
     [Fact]
     public async Task Weekly_AnyDayInTheWeek_ResolvesToTheSameMondayThroughSunday()
     {
-        var account = await NewAccountAsync();
-        await SeedWeekAsync(account);
+        var user = await NewUserAsync();
+        await SeedWeekAsync(user);
 
-        var fromThursday = await GetAsync<WeeklyReportDto>(account, "/reports/weekly?weekOf=2031-03-06");
-        var fromSunday = await GetAsync<WeeklyReportDto>(account, "/reports/weekly?weekOf=2031-03-09");
+        var fromThursday = await GetAsync<WeeklyReportDto>(user, "/reports/weekly?weekOf=2031-03-06");
+        var fromSunday = await GetAsync<WeeklyReportDto>(user, "/reports/weekly?weekOf=2031-03-09");
 
         Assert.Equal(WeekStart, fromThursday.WeekStart);
         Assert.Equal(WeekStart, fromSunday.WeekStart);
@@ -131,9 +127,9 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
     [Fact]
     public async Task Weekly_WithNoWeekOf_ReportsTheCurrentUtcWeek()
     {
-        var account = await NewAccountAsync();
+        var user = await NewUserAsync();
 
-        var report = await GetAsync<WeeklyReportDto>(account, "/reports/weekly");
+        var report = await GetAsync<WeeklyReportDto>(user, "/reports/weekly");
 
         var expected = DateOnly.FromDateTime(DateTime.UtcNow);
         Assert.Equal(expected.AddDays(-(((int)expected.DayOfWeek + 6) % 7)), report.WeekStart);
@@ -146,11 +142,11 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
     [Fact]
     public async Task Weekly_ExcludesEntriesJustOutsideTheWeek()
     {
-        var account = await NewAccountAsync();
-        await SeedWeekAsync(account);
+        var user = await NewUserAsync();
+        await SeedWeekAsync(user);
 
-        var previous = await GetAsync<WeeklyReportDto>(account, "/reports/weekly?weekOf=2031-02-24");
-        var next = await GetAsync<WeeklyReportDto>(account, "/reports/weekly?weekOf=2031-03-10");
+        var previous = await GetAsync<WeeklyReportDto>(user, "/reports/weekly?weekOf=2031-02-24");
+        var next = await GetAsync<WeeklyReportDto>(user, "/reports/weekly?weekOf=2031-03-10");
 
         // Each neighbouring week holds exactly the one entry the seeded week must not have counted.
         Assert.Equal(1000, previous.TotalSeconds);
@@ -160,10 +156,10 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
     [Fact]
     public async Task Weekly_ExcludesTombstonedEntriesTasksAndProjects()
     {
-        var account = await NewAccountAsync();
-        await SeedWeekAsync(account);
+        var user = await NewUserAsync();
+        await SeedWeekAsync(user);
 
-        var report = await GetAsync<WeeklyReportDto>(account, $"/reports/weekly?weekOf={WeekStart:yyyy-MM-dd}");
+        var report = await GetAsync<WeeklyReportDto>(user, $"/reports/weekly?weekOf={WeekStart:yyyy-MM-dd}");
 
         // The seed hides 9999s behind a tombstoned entry, 4444s behind a tombstoned task, and 3333s
         // behind a tombstoned project — all on days that are otherwise accounted for exactly.
@@ -180,16 +176,16 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
     [Fact]
     public async Task Weekly_FallsBackToEndMinusStartWhenDurationSecondsIsMissing()
     {
-        var account = await NewAccountAsync();
+        var user = await NewUserAsync();
         var project = Guid.NewGuid();
         var task = Guid.NewGuid();
 
         await SaveAsync(
-            NewProject(account.Id, project, "Alpha"),
-            NewTask(account.Id, task, project, "Design"),
-            NewEntry(account.Id, task, At(2031, 3, 3, 9), end: At(2031, 3, 3, 11), durationSeconds: null));
+            NewProject(user.Id, project, "Alpha"),
+            NewTask(user.Id, task, project, "Design"),
+            NewEntry(user.Id, task, At(2031, 3, 3, 9), end: At(2031, 3, 3, 11), durationSeconds: null));
 
-        var report = await GetAsync<WeeklyReportDto>(account, $"/reports/weekly?weekOf={WeekStart:yyyy-MM-dd}");
+        var report = await GetAsync<WeeklyReportDto>(user, $"/reports/weekly?weekOf={WeekStart:yyyy-MM-dd}");
 
         Assert.Equal(7200, report.TotalSeconds);
     }
@@ -197,10 +193,10 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
     [Fact]
     public async Task Weekly_Csv_HasTheDocumentedColumnsAndOneRowPerDayProjectTask()
     {
-        var account = await NewAccountAsync();
-        await SeedWeekAsync(account);
+        var user = await NewUserAsync();
+        await SeedWeekAsync(user);
 
-        var response = await account.Client.GetAsync($"/reports/weekly?weekOf={WeekStart:yyyy-MM-dd}&format=csv");
+        var response = await user.Client.GetAsync($"/reports/weekly?weekOf={WeekStart:yyyy-MM-dd}&format=csv");
         response.EnsureSuccessStatusCode();
 
         Assert.Equal("text/csv", response.Content.Headers.ContentType?.MediaType);
@@ -220,13 +216,13 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
     [Fact]
     public async Task Weekly_Csv_ViaAcceptHeader_IsTheSameAsFormatCsv()
     {
-        var account = await NewAccountAsync();
-        await SeedWeekAsync(account);
+        var user = await NewUserAsync();
+        await SeedWeekAsync(user);
 
         using var request = new HttpRequestMessage(HttpMethod.Get, $"/reports/weekly?weekOf={WeekStart:yyyy-MM-dd}");
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/csv"));
 
-        var response = await account.Client.SendAsync(request);
+        var response = await user.Client.SendAsync(request);
         response.EnsureSuccessStatusCode();
 
         Assert.Equal("text/csv", response.Content.Headers.ContentType?.MediaType);
@@ -240,12 +236,12 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
     [Fact]
     public async Task Weekly_WithWildcardAccept_StaysJson()
     {
-        var account = await NewAccountAsync();
+        var user = await NewUserAsync();
 
         using var request = new HttpRequestMessage(HttpMethod.Get, "/reports/weekly");
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*"));
 
-        var response = await account.Client.SendAsync(request);
+        var response = await user.Client.SendAsync(request);
         response.EnsureSuccessStatusCode();
 
         Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
@@ -258,16 +254,16 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
     [Fact]
     public async Task Csv_QuotesNamesContainingCommasAndQuotes()
     {
-        var account = await NewAccountAsync();
+        var user = await NewUserAsync();
         var project = Guid.NewGuid();
         var task = Guid.NewGuid();
 
         await SaveAsync(
-            NewProject(account.Id, project, "Alpha, Inc."),
-            NewTask(account.Id, task, project, "Say \"hello\""),
-            NewEntry(account.Id, task, At(2031, 3, 3, 9), At(2031, 3, 3, 10), 3600));
+            NewProject(user.Id, project, "Alpha, Inc."),
+            NewTask(user.Id, task, project, "Say \"hello\""),
+            NewEntry(user.Id, task, At(2031, 3, 3, 9), At(2031, 3, 3, 10), 3600));
 
-        var response = await account.Client.GetAsync($"/reports/weekly?weekOf={WeekStart:yyyy-MM-dd}&format=csv");
+        var response = await user.Client.GetAsync($"/reports/weekly?weekOf={WeekStart:yyyy-MM-dd}&format=csv");
 
         Assert.Equal(
             "2031-03-03,\"Alpha, Inc.\",\"Say \"\"hello\"\"\",3600",
@@ -277,9 +273,9 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
     [Fact]
     public async Task Weekly_UnknownFormat_Returns400()
     {
-        var account = await NewAccountAsync();
+        var user = await NewUserAsync();
 
-        var response = await account.Client.GetAsync("/reports/weekly?format=xlsx");
+        var response = await user.Client.GetAsync("/reports/weekly?format=xlsx");
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
@@ -292,9 +288,9 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
     [InlineData("9999-12-31")]
     public async Task Weekly_UnusableWeekOf_Returns400(string weekOf)
     {
-        var account = await NewAccountAsync();
+        var user = await NewUserAsync();
 
-        var response = await account.Client.GetAsync($"/reports/weekly?weekOf={weekOf}");
+        var response = await user.Client.GetAsync($"/reports/weekly?weekOf={weekOf}");
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
@@ -303,10 +299,10 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
     [Fact]
     public async Task Project_ToAtTheEndOfDateOnlysRange_Returns400()
     {
-        var account = await NewAccountAsync();
-        var seed = await SeedWeekAsync(account);
+        var user = await NewUserAsync();
+        var seed = await SeedWeekAsync(user);
 
-        var response = await account.Client.GetAsync($"/reports/projects/{seed.Alpha}?to=9999-12-31");
+        var response = await user.Client.GetAsync($"/reports/projects/{seed.Alpha}?to=9999-12-31");
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
@@ -314,10 +310,10 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
     [Fact]
     public async Task Project_ReportsItsOwnTasksOnly()
     {
-        var account = await NewAccountAsync();
-        var seed = await SeedWeekAsync(account);
+        var user = await NewUserAsync();
+        var seed = await SeedWeekAsync(user);
 
-        var report = await GetAsync<ProjectReportDto>(account, $"/reports/projects/{seed.Alpha}");
+        var report = await GetAsync<ProjectReportDto>(user, $"/reports/projects/{seed.Alpha}");
 
         Assert.Equal("Alpha", report.ProjectName);
         Assert.Null(report.From);
@@ -338,15 +334,15 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
     [Fact]
     public async Task Project_DateRange_ClipsInclusivelyAtBothEnds()
     {
-        var account = await NewAccountAsync();
-        var seed = await SeedWeekAsync(account);
+        var user = await NewUserAsync();
+        var seed = await SeedWeekAsync(user);
 
         var monday = await GetAsync<ProjectReportDto>(
-            account, $"/reports/projects/{seed.Alpha}?from=2031-03-03&to=2031-03-03");
+            user, $"/reports/projects/{seed.Alpha}?from=2031-03-03&to=2031-03-03");
         var throughTuesday = await GetAsync<ProjectReportDto>(
-            account, $"/reports/projects/{seed.Alpha}?from=2031-03-03&to=2031-03-04");
+            user, $"/reports/projects/{seed.Alpha}?from=2031-03-03&to=2031-03-04");
         var endOfDay = await GetAsync<ProjectReportDto>(
-            account, $"/reports/projects/{seed.Alpha}?from=2031-03-02&to=2031-03-02");
+            user, $"/reports/projects/{seed.Alpha}?from=2031-03-02&to=2031-03-02");
 
         Assert.Equal(5400, monday.TotalSeconds);
         Assert.Equal(12600, throughTuesday.TotalSeconds);
@@ -360,11 +356,11 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
     [Fact]
     public async Task Project_OpenEndedRange_ClipsOnTheGivenSideOnly()
     {
-        var account = await NewAccountAsync();
-        var seed = await SeedWeekAsync(account);
+        var user = await NewUserAsync();
+        var seed = await SeedWeekAsync(user);
 
-        var fromTuesday = await GetAsync<ProjectReportDto>(account, $"/reports/projects/{seed.Alpha}?from=2031-03-04");
-        var untilMonday = await GetAsync<ProjectReportDto>(account, $"/reports/projects/{seed.Alpha}?to=2031-03-03");
+        var fromTuesday = await GetAsync<ProjectReportDto>(user, $"/reports/projects/{seed.Alpha}?from=2031-03-04");
+        var untilMonday = await GetAsync<ProjectReportDto>(user, $"/reports/projects/{seed.Alpha}?to=2031-03-03");
 
         Assert.Equal(9200, fromTuesday.TotalSeconds);
         Assert.Null(fromTuesday.To);
@@ -376,10 +372,10 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
     [Fact]
     public async Task Project_Csv_HasTheDocumentedColumns()
     {
-        var account = await NewAccountAsync();
-        var seed = await SeedWeekAsync(account);
+        var user = await NewUserAsync();
+        var seed = await SeedWeekAsync(user);
 
-        var response = await account.Client.GetAsync(
+        var response = await user.Client.GetAsync(
             $"/reports/projects/{seed.Alpha}?from=2031-03-03&to=2031-03-09&format=csv");
         response.EnsureSuccessStatusCode();
 
@@ -391,9 +387,9 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
     [Fact]
     public async Task Project_Unknown_Returns404()
     {
-        var account = await NewAccountAsync();
+        var user = await NewUserAsync();
 
-        var response = await account.Client.GetAsync($"/reports/projects/{Guid.NewGuid()}");
+        var response = await user.Client.GetAsync($"/reports/projects/{Guid.NewGuid()}");
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
@@ -401,10 +397,10 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
     [Fact]
     public async Task Project_Tombstoned_Returns404()
     {
-        var account = await NewAccountAsync();
-        var seed = await SeedWeekAsync(account);
+        var user = await NewUserAsync();
+        var seed = await SeedWeekAsync(user);
 
-        var response = await account.Client.GetAsync($"/reports/projects/{seed.DeletedProject}");
+        var response = await user.Client.GetAsync($"/reports/projects/{seed.DeletedProject}");
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
@@ -412,10 +408,10 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
     [Fact]
     public async Task Project_ReversedRange_Returns400()
     {
-        var account = await NewAccountAsync();
-        var seed = await SeedWeekAsync(account);
+        var user = await NewUserAsync();
+        var seed = await SeedWeekAsync(user);
 
-        var response = await account.Client.GetAsync(
+        var response = await user.Client.GetAsync(
             $"/reports/projects/{seed.Alpha}?from=2031-03-09&to=2031-03-03");
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
@@ -424,11 +420,11 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
     [Fact]
     public async Task Task_ReportsADailyBreakdownForThatTaskAlone()
     {
-        var account = await NewAccountAsync();
-        var seed = await SeedWeekAsync(account);
+        var user = await NewUserAsync();
+        var seed = await SeedWeekAsync(user);
 
         var report = await GetAsync<TaskReportDto>(
-            account, $"/reports/tasks/{seed.Support}?from=2031-03-03&to=2031-03-09");
+            user, $"/reports/tasks/{seed.Support}?from=2031-03-03&to=2031-03-09");
 
         Assert.Equal("Support", report.TaskName);
         Assert.Equal("Beta", report.ProjectName);
@@ -444,11 +440,11 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
     [Fact]
     public async Task Task_DateRange_Clips()
     {
-        var account = await NewAccountAsync();
-        var seed = await SeedWeekAsync(account);
+        var user = await NewUserAsync();
+        var seed = await SeedWeekAsync(user);
 
         var report = await GetAsync<TaskReportDto>(
-            account, $"/reports/tasks/{seed.Support}?from=2031-03-07&to=2031-03-09");
+            user, $"/reports/tasks/{seed.Support}?from=2031-03-07&to=2031-03-09");
 
         Assert.Equal(900, report.TotalSeconds);
         Assert.Equal(new DateOnly(2031, 3, 9), Assert.Single(report.Days).Date);
@@ -457,10 +453,10 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
     [Fact]
     public async Task Task_Csv_HasTheDocumentedColumns()
     {
-        var account = await NewAccountAsync();
-        var seed = await SeedWeekAsync(account);
+        var user = await NewUserAsync();
+        var seed = await SeedWeekAsync(user);
 
-        var response = await account.Client.GetAsync(
+        var response = await user.Client.GetAsync(
             $"/reports/tasks/{seed.Support}?from=2031-03-03&to=2031-03-09&format=csv");
         response.EnsureSuccessStatusCode();
 
@@ -472,9 +468,9 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
     [Fact]
     public async Task Task_Unknown_Returns404()
     {
-        var account = await NewAccountAsync();
+        var user = await NewUserAsync();
 
-        var response = await account.Client.GetAsync($"/reports/tasks/{Guid.NewGuid()}");
+        var response = await user.Client.GetAsync($"/reports/tasks/{Guid.NewGuid()}");
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
@@ -482,10 +478,10 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
     [Fact]
     public async Task Task_Tombstoned_Returns404()
     {
-        var account = await NewAccountAsync();
-        var seed = await SeedWeekAsync(account);
+        var user = await NewUserAsync();
+        var seed = await SeedWeekAsync(user);
 
-        var response = await account.Client.GetAsync($"/reports/tasks/{seed.DeletedTask}");
+        var response = await user.Client.GetAsync($"/reports/tasks/{seed.DeletedTask}");
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
@@ -497,23 +493,23 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
     [Fact]
     public async Task Task_UnderATombstonedProject_Returns404()
     {
-        var account = await NewAccountAsync();
-        var seed = await SeedWeekAsync(account);
+        var user = await NewUserAsync();
+        var seed = await SeedWeekAsync(user);
 
-        var response = await account.Client.GetAsync($"/reports/tasks/{seed.TaskUnderDeletedProject}");
+        var response = await user.Client.GetAsync($"/reports/tasks/{seed.TaskUnderDeletedProject}");
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
     /// <summary>
-    /// The whole point of scoping on the token claim: two accounts hold identically-shaped weeks and
+    /// The whole point of scoping on the token claim: two users hold identically-shaped weeks and
     /// neither can see, total, or address the other's rows.
     /// </summary>
     [Fact]
-    public async Task Reports_NeverIncludeAnotherAccountsData()
+    public async Task Reports_NeverIncludeAnotherUsersData()
     {
-        var mine = await NewAccountAsync();
-        var theirs = await NewAccountAsync();
+        var mine = await NewUserAsync();
+        var theirs = await NewUserAsync();
 
         var seed = await SeedWeekAsync(mine);
         var theirProject = Guid.NewGuid();
@@ -537,7 +533,7 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
         Assert.Equal(HttpStatusCode.NotFound, (await theirs.Client.GetAsync($"/reports/projects/{seed.Alpha}")).StatusCode);
     }
 
-    private sealed record TestAccount(int Id, HttpClient Client);
+    private sealed record TestUser(int Id, HttpClient Client);
 
     private sealed record SeededWeek(
         Guid Alpha,
@@ -550,33 +546,14 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
         Guid TaskUnderDeletedProject);
 
     /// <summary>
-    /// A fresh Account + Device with a token signed the same way the host signs its own. See the class
+    /// A fresh User + Device with a token signed the same way the host signs its own. See the class
     /// note for why these tests cannot use <c>/auth/register-device</c>.
     /// </summary>
-    private async Task<TestAccount> NewAccountAsync()
+    private async Task<TestUser> NewUserAsync()
     {
-        using var db = fixture.CreateDbContext();
-
-        var account = new Account { Name = $"Reports {Guid.NewGuid()}", CreatedAt = DateTime.UtcNow };
-        db.Accounts.Add(account);
-        await db.SaveChangesAsync();
-
-        var device = new Device
-        {
-            AccountId = account.Id,
-            DeviceId = Guid.NewGuid().ToString(),
-            Label = "reports-test",
-            CreatedAt = DateTime.UtcNow,
-            LastSeenUtc = DateTime.UtcNow,
-        };
-        db.Devices.Add(device);
-        await db.SaveChangesAsync();
-
-        var (token, _) = Tokens.IssueToken(account.Id, device.Id, device.DeviceId);
-        var client = fixture.Factory.CreateClient();
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
-
-        return new TestAccount(account.Id, client);
+        var userId = await fixture.NewUserAsync("Reports");
+        var device = await fixture.EnrollDeviceAsync(userId, "reports-test");
+        return new TestUser(userId, device.Client);
     }
 
     /// <summary>
@@ -603,7 +580,7 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
     ///
     /// Wednesday is where all three tombstones sit, so a leak shows up as a day that should be zero.
     /// </summary>
-    private async Task<SeededWeek> SeedWeekAsync(TestAccount account)
+    private async Task<SeededWeek> SeedWeekAsync(TestUser user)
     {
         var seed = new SeededWeek(
             Alpha: Guid.NewGuid(),
@@ -616,25 +593,25 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
             TaskUnderDeletedProject: Guid.NewGuid());
 
         await SaveAsync(
-            NewProject(account.Id, seed.Alpha, "Alpha"),
-            NewProject(account.Id, seed.Beta, "Beta"),
-            NewProject(account.Id, seed.DeletedProject, "Deleted project", isDeleted: true),
-            NewTask(account.Id, seed.Design, seed.Alpha, "Design"),
-            NewTask(account.Id, seed.Build, seed.Alpha, "Build"),
-            NewTask(account.Id, seed.Support, seed.Beta, "Support"),
-            NewTask(account.Id, seed.DeletedTask, seed.Alpha, "Deleted task", isDeleted: true),
-            NewTask(account.Id, seed.TaskUnderDeletedProject, seed.DeletedProject, "Orphan"),
-            NewFinished(account.Id, seed.Design, At(2031, 3, 3, 9), 3600),
-            NewFinished(account.Id, seed.Design, At(2031, 3, 3, 13), 1800),
-            NewFinished(account.Id, seed.Build, At(2031, 3, 4, 10), 7200),
-            NewFinished(account.Id, seed.Support, At(2031, 3, 6, 8), 5400),
-            NewFinished(account.Id, seed.Support, At(2031, 3, 9, 23, 30), 900),
-            NewFinished(account.Id, seed.Design, At(2031, 3, 2, 23, 59), 1000),
-            NewFinished(account.Id, seed.Build, At(2031, 3, 10, 0, 1), 2000),
-            NewFinished(account.Id, seed.Design, At(2031, 3, 5, 10), 9999, isDeleted: true),
-            NewFinished(account.Id, seed.DeletedTask, At(2031, 3, 5, 10), 4444),
-            NewFinished(account.Id, seed.TaskUnderDeletedProject, At(2031, 3, 5, 10), 3333),
-            NewEntry(account.Id, seed.Build, At(2031, 3, 7, 9), end: null, durationSeconds: null));
+            NewProject(user.Id, seed.Alpha, "Alpha"),
+            NewProject(user.Id, seed.Beta, "Beta"),
+            NewProject(user.Id, seed.DeletedProject, "Deleted project", isDeleted: true),
+            NewTask(user.Id, seed.Design, seed.Alpha, "Design"),
+            NewTask(user.Id, seed.Build, seed.Alpha, "Build"),
+            NewTask(user.Id, seed.Support, seed.Beta, "Support"),
+            NewTask(user.Id, seed.DeletedTask, seed.Alpha, "Deleted task", isDeleted: true),
+            NewTask(user.Id, seed.TaskUnderDeletedProject, seed.DeletedProject, "Orphan"),
+            NewFinished(user.Id, seed.Design, At(2031, 3, 3, 9), 3600),
+            NewFinished(user.Id, seed.Design, At(2031, 3, 3, 13), 1800),
+            NewFinished(user.Id, seed.Build, At(2031, 3, 4, 10), 7200),
+            NewFinished(user.Id, seed.Support, At(2031, 3, 6, 8), 5400),
+            NewFinished(user.Id, seed.Support, At(2031, 3, 9, 23, 30), 900),
+            NewFinished(user.Id, seed.Design, At(2031, 3, 2, 23, 59), 1000),
+            NewFinished(user.Id, seed.Build, At(2031, 3, 10, 0, 1), 2000),
+            NewFinished(user.Id, seed.Design, At(2031, 3, 5, 10), 9999, isDeleted: true),
+            NewFinished(user.Id, seed.DeletedTask, At(2031, 3, 5, 10), 4444),
+            NewFinished(user.Id, seed.TaskUnderDeletedProject, At(2031, 3, 5, 10), 3333),
+            NewEntry(user.Id, seed.Build, At(2031, 3, 7, 9), end: null, durationSeconds: null));
 
         return seed;
     }
@@ -646,9 +623,9 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
         await db.SaveChangesAsync();
     }
 
-    private static Project NewProject(int accountId, Guid syncId, string name, bool isDeleted = false) => new()
+    private static Project NewProject(int userId, Guid syncId, string name, bool isDeleted = false) => new()
     {
-        AccountId = accountId,
+        UserId = userId,
         SyncId = syncId,
         Version = 1,
         Name = name,
@@ -656,9 +633,9 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
         CreatedAt = DateTime.UtcNow,
     };
 
-    private static TaskItem NewTask(int accountId, Guid syncId, Guid projectSyncId, string name, bool isDeleted = false) => new()
+    private static TaskItem NewTask(int userId, Guid syncId, Guid projectSyncId, string name, bool isDeleted = false) => new()
     {
-        AccountId = accountId,
+        UserId = userId,
         SyncId = syncId,
         ProjectSyncId = projectSyncId,
         Version = 1,
@@ -667,13 +644,13 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
         CreatedAt = DateTime.UtcNow,
     };
 
-    private static TimeEntry NewFinished(int accountId, Guid taskSyncId, DateTime start, long seconds, bool isDeleted = false) =>
-        NewEntry(accountId, taskSyncId, start, start.AddSeconds(seconds), seconds, isDeleted);
+    private static TimeEntry NewFinished(int userId, Guid taskSyncId, DateTime start, long seconds, bool isDeleted = false) =>
+        NewEntry(userId, taskSyncId, start, start.AddSeconds(seconds), seconds, isDeleted);
 
     private static TimeEntry NewEntry(
-        int accountId, Guid taskSyncId, DateTime start, DateTime? end, long? durationSeconds, bool isDeleted = false) => new()
+        int userId, Guid taskSyncId, DateTime start, DateTime? end, long? durationSeconds, bool isDeleted = false) => new()
     {
-        AccountId = accountId,
+        UserId = userId,
         SyncId = Guid.NewGuid(),
         TaskSyncId = taskSyncId,
         Version = 1,
@@ -687,9 +664,9 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
     private static DateTime At(int year, int month, int day, int hour, int minute = 0) =>
         new(year, month, day, hour, minute, 0, DateTimeKind.Utc);
 
-    private static async Task<T> GetAsync<T>(TestAccount account, string url)
+    private static async Task<T> GetAsync<T>(TestUser user, string url)
     {
-        var response = await account.Client.GetAsync(url);
+        var response = await user.Client.GetAsync(url);
         response.EnsureSuccessStatusCode();
         return (await response.Content.ReadFromJsonAsync<T>())!;
     }

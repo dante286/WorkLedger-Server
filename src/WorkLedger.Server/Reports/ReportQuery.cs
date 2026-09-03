@@ -22,11 +22,11 @@ internal sealed record ReportBucket(
 /// <c>StartTime.Date</c> / <c>.Year|.Month|.Day</c> translations either fail or truncate through the
 /// <i>session's</i> TimeZone, which would make a report's day boundaries depend on the server's
 /// configuration. <c>AT TIME ZONE 'UTC'</c> here is explicit and cannot drift. Second, the two joins are
-/// on (AccountId, SyncId) pairs with no navigation properties to ride on — the S1 model links parents by
+/// on (UserId, SyncId) pairs with no navigation properties to ride on — the S1 model links parents by
 /// SyncId, deliberately, and declares no EF relationships between Project/TaskItem/TimeEntry. S4 blesses
 /// raw SQL for exactly this.</para>
 ///
-/// <para><b>Why one query and not four.</b> The weekly report needs an account total, per-project,
+/// <para><b>Why one query and not four.</b> The weekly report needs a user total, per-project,
 /// per-task and per-day figures. Grouping once at (day, task) grain and folding the result in memory
 /// keeps all four views arithmetically consistent by construction, and the fold is over a result set
 /// bounded by days × tasks — the <c>TimeEntries</c> table itself is summed in Postgres and never
@@ -38,13 +38,13 @@ internal sealed class ReportQuery(WorkLedgerDbContext db)
 {
     private const string From = """
         FROM "TimeEntries" te
-        JOIN "TaskItems" t ON t."AccountId" = te."AccountId"
+        JOIN "TaskItems" t ON t."UserId" = te."UserId"
                           AND t."SyncId" = te."TaskSyncId"
                           AND t."IsDeleted" = FALSE
-        JOIN "Projects" p ON p."AccountId" = t."AccountId"
+        JOIN "Projects" p ON p."UserId" = t."UserId"
                          AND p."SyncId" = t."ProjectSyncId"
                          AND p."IsDeleted" = FALSE
-        WHERE te."AccountId" = @accountId
+        WHERE te."UserId" = @userId
           AND te."IsDeleted" = FALSE
           AND te."StartTime" >= @fromUtc
           AND te."StartTime" < @toUtcExclusive
@@ -153,7 +153,7 @@ internal sealed class ReportQuery(WorkLedgerDbContext db)
         var command = db.Database.GetDbConnection().CreateCommand();
         command.CommandText = sql;
 
-        Add(command, "accountId", filter.AccountId);
+        Add(command, "userId", filter.UserId);
         Add(command, "fromUtc", filter.Range.FromUtc);
         Add(command, "toUtcExclusive", filter.Range.ToUtcExclusive);
 
@@ -189,7 +189,7 @@ internal sealed class ReportQuery(WorkLedgerDbContext db)
 }
 
 /// <summary>
-/// AccountId always comes from the caller's token, never from the request — the same rule the sync
-/// endpoints hold to, and the reason a device cannot address another account's rows.
+/// UserId always comes from the caller's token, never from the request — the same rule the sync
+/// endpoints hold to, and the reason a device cannot address another user's rows.
 /// </summary>
-internal sealed record ReportFilter(int AccountId, ReportRange Range, Guid? ProjectSyncId = null, Guid? TaskSyncId = null);
+internal sealed record ReportFilter(int UserId, ReportRange Range, Guid? ProjectSyncId = null, Guid? TaskSyncId = null);
