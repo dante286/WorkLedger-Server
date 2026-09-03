@@ -28,16 +28,28 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # github.ref_name is the tag verbatim, e.g. "v0.2.0", but VERSION below lands on
-      # -p:InformationalVersion, and MSBuild rejects a leading "v" as an invalid NuGet version
-      # string (NETSDK1018). That is why the v0.1.0 release build failed: it published no image
-      # and never reached the release step. Strip the prefix here so the whole repo agrees that
-      # VERSION is a bare semver -- the Dockerfile's own default is 0.0.0-dev, and compose passes
-      # WORKLEDGER_VERSION unprefixed. docker/metadata-action below keeps taking the raw tag,
-      # since type=semver parses the "v" happily; it is only the build arg that cannot.
-      - name: Strip the tag's leading "v" for the build arg
+      # Neither github.ref_name nor github.repository is usable verbatim below, in two different
+      # ways, so both are normalized here once:
+      #
+      #   number  The tag is "v0.2.0", but VERSION lands on -p:InformationalVersion and MSBuild
+      #           rejects a leading "v" as an invalid NuGet version string (NETSDK1018) -- that is
+      #           why the v0.1.0 release build failed and published nothing. It is also the tag
+      #           metadata-action's type=semver,pattern={{version}} actually pushes, so it is what
+      #           the release note has to tell operators to pull. The rest of the repo already
+      #           agrees a bare semver is the convention: the Dockerfile defaults VERSION to
+      #           0.0.0-dev and compose passes WORKLEDGER_VERSION unprefixed.
+      #   image   github.repository is mixed-case ("dante286/WorkLedger-API") and GHCR rejects
+      #           that, so metadata-action lower-cases it for the push. The release note has to
+      #           lower-case it too, or it hands out an image reference that cannot resolve.
+      #
+      # metadata-action below keeps taking the raw values -- type=semver parses the "v" happily and
+      # the action lower-cases the image itself. It is the build arg and the release body that
+      # cannot.
+      - name: Derive the image name and version
         id: version
-        run: echo "number=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "number=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
       - name: Derive image tags
         id: meta
@@ -70,8 +82,9 @@ jobs:
         with:
           generate_release_notes: true
           body: |
-            Container image: `ghcr.io/${{ github.repository }}:${{ github.ref_name }}`
+            Container image: `${{ steps.version.outputs.image }}:${{ steps.version.outputs.number }}`
 
             Deploy: copy `.env.example` to `.env`, fill in the secrets, then
-            `WORKLEDGER_VERSION=${{ github.ref_name }} docker compose up -d`.
-            See README.md for the operator quickstart.
+            `WORKLEDGER_VERSION=${{ steps.version.outputs.number }} docker compose up -d`.
+            See README.md for the operator quickstart, and its "Upgrading" sections before
+            moving between minor versions.
