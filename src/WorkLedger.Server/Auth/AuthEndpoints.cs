@@ -20,9 +20,13 @@ public static class AuthEndpoints
     public const string RateLimitPolicy = "auth-credentials";
 
     /// <summary>
-    /// The whole auth surface. Everything here except <c>/auth/whoami</c> and <c>/auth/password</c> is
-    /// <c>AllowAnonymous</c> — by definition, since a caller with no account and no token is exactly who
-    /// those endpoints are for. The two authenticated ones are left to Program.cs's fallback policy.
+    /// The whole auth surface. Everything <i>in this file</i> except <c>/auth/whoami</c> and
+    /// <c>/auth/password</c> is <c>AllowAnonymous</c> — by definition, since a caller with no account and
+    /// no token is exactly who those endpoints are for. The authenticated ones are left to Program.cs's
+    /// fallback policy, which is also what protects every route in <see cref="AccountEndpoints"/>: S8's
+    /// device-management and account-deletion routes are mapped from here so the auth surface is
+    /// registered in one call, but live in their own file because none of them takes a credential from an
+    /// anonymous caller.
     /// <para>
     /// <b>The secret's job moved, twice.</b> In S2 <c>X-Bootstrap-Secret</c> gated device bootstrap and
     /// was therefore a token-issuing credential; from S6 it gates signup; from S7, with
@@ -40,6 +44,7 @@ public static class AuthEndpoints
         MapLogin(app);
         MapChangePassword(app);
         MapWhoAmI(app);
+        app.MapAccountEndpoints();
     }
 
     /// <summary>
@@ -501,7 +506,9 @@ public static class AuthEndpoints
         return device;
     }
 
-    private static UserSummary Summarize(User user) =>
+    /// <summary>Internal rather than private so <see cref="AccountEndpoints"/>' logout-all can answer with the
+    /// same <see cref="UserSummary"/> shape login does, rather than a second copy of it that can drift.</summary>
+    internal static UserSummary Summarize(User user) =>
         new(user.Id, user.Email ?? string.Empty, user.DisplayName, user.CreatedAt);
 
     private static IResult InvalidCredentials() =>
@@ -521,7 +528,9 @@ public static class AuthEndpoints
             "Too many failed sign-in attempts. This account is temporarily locked; try again later.");
     }
 
-    private static IResult Error(int statusCode, string message) =>
+    /// <summary>The one error body shape this API's auth surface answers with. Internal so
+    /// <see cref="AccountEndpoints"/> shares it.</summary>
+    internal static IResult Error(int statusCode, string message) =>
         Results.Json(new { error = message }, statusCode: statusCode);
 
     /// <summary>

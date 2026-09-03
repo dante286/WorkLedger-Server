@@ -32,6 +32,44 @@ public sealed record ChangePasswordRequest(string CurrentPassword, string NewPas
 public sealed record WhoAmIResponse(int UserId, string Email, string? DisplayName, string DeviceId);
 
 /// <summary>
+/// One row of <c>GET /auth/devices</c>: something the user has signed in from, as a device-management
+/// screen needs to show it.
+/// <para>
+/// <b><see cref="DeviceId"/> is the client's own per-install GUID string — the same value it sends as
+/// <c>LoginRequest.DeviceId</c> and <c>Sync.SyncChangeDto.OriginDeviceId</c> — and it is what
+/// <c>DELETE /auth/devices/{deviceId}</c> takes.</b> The server's internal row id is never on the wire,
+/// exactly as synced entities are addressed by <c>SyncId</c> and never by their <c>Id</c>.
+/// </para>
+/// <para>
+/// <see cref="IsCurrent"/> marks the device that made the request, so a client can label "this device"
+/// without having to remember which GUID it installed with, and can warn before removing it (allowed,
+/// and equivalent to signing this device out).
+/// </para>
+/// </summary>
+public sealed record DeviceSummary(
+    string DeviceId,
+    string? Label,
+    DateTime CreatedAtUtc,
+    DateTime? LastSeenUtc,
+    bool IsCurrent);
+
+/// <summary>
+/// The body of <c>DELETE /auth/account</c>. Both fields are gates on an irreversible, immediate and
+/// total deletion — there is no grace period and no undo — and they guard against different mistakes.
+/// <para>
+/// <see cref="Password"/> is re-verified even though the caller already holds a valid token, for the
+/// same reason <see cref="ChangePasswordRequest"/> does it: a leaked token must not be enough to destroy
+/// an account.
+/// </para>
+/// <para>
+/// <see cref="ConfirmEmail"/> must match the signed-in account's address (case-insensitively). That is
+/// the typed-confirmation gesture a destructive action deserves, and it independently stops a client bug
+/// — a stale token, a mixed-up session — from deleting an account the person was not looking at.
+/// </para>
+/// </summary>
+public sealed record DeleteAccountRequest(string Password, string ConfirmEmail);
+
+/// <summary>
 /// The body of both <c>POST /auth/register</c> and <c>POST /auth/claim</c> — creating a user and
 /// attaching credentials to the pre-S6 legacy row take exactly the same three inputs.
 /// </summary>

@@ -15,8 +15,10 @@ namespace WorkLedger.Server.Auth;
 /// <see cref="OnTokenValidatedAsync"/> loads the token's device row <b>joined to its user</b> in one
 /// query and fails the token — a plain <c>401</c> — if the device row is gone, its <c>UserId</c>
 /// disagrees with the <c>user_id</c> claim, or the stored stamp no longer matches the claim. That single
-/// query covers three separate revocations: <b>account deleted</b>, <b>device removed</b>, and
-/// <b>stamp bumped</b> (a password change today, S8's logout-all next).
+/// query covers three separate revocations, and S8 gave each of them an endpoint:
+/// <b>account deleted</b> (<c>DELETE /auth/account</c>), <b>device removed</b>
+/// (<c>DELETE /auth/devices/{deviceId}</c>), and <b>stamp bumped</b> (<c>POST /auth/password</c> and
+/// <c>POST /auth/logout-all</c>).
 /// </para>
 /// <para>
 /// <b>Ordering matters and is guaranteed.</b> <c>OnTokenValidated</c> fires only after the signature,

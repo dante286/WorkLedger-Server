@@ -44,11 +44,13 @@ Three projects (`WorkLedger-Server.slnx`), .NET 10, Minimal APIs, EF Core + Npgs
   free of server-only packages: the client compiles these same files.
 - **`src/WorkLedger.Server`** — everything wired in `Program.cs` (no controllers): DI, JWT bearer, a
   `FallbackPolicy` that makes every endpoint authenticated unless it opts out with `.AllowAnonymous()`
-  (`/`, `/health`, and everything in `Auth/AuthEndpoints.cs` bar `/auth/whoami`), then
-  `MapAuthEndpoints()` / `MapSyncEndpoints()` / `MapReportEndpoints()`.
+  (`/`, `/health`, and everything in `Auth/AuthEndpoints.cs` bar `/auth/whoami` and `/auth/password`),
+  then `MapAuthEndpoints()` / `MapSyncEndpoints()` / `MapReportEndpoints()`. `Auth/AccountEndpoints.cs`
+  holds S8's four signed-in routes (devices, logout-all, account deletion) and is mapped from
+  `MapAuthEndpoints()`; none of them opts out of the fallback policy.
 - **`tests/WorkLedger.Server.Tests`** — xUnit, `WebApplicationFactory<Program>` + Testcontainers.
 
-`plans/` holds the S0–S9 build plans (S0–S7 shipped; S8–S9 pending) and is the design record —
+`plans/` holds the S0–S9 build plans (S0–S8 shipped; S9 pending) and is the design record —
 `plans/README.md` explains the cross-repo contract handoff and house style.
 
 ### Deployment (`Dockerfile`, `docker-compose.yml`)
@@ -102,6 +104,25 @@ lockout counter resets when the window expires**, not only on success; and **a 4
 all**, neither incrementing the counter nor re-stamping `LockoutEndUtc`. The last two are what stop an
 account being permanently locked. `Auth:MaxFailedLogins`/`Auth:LockoutMinutes` are enforced from the same
 `AuthOptions` accessor `/auth/capabilities` advertises them from — don't introduce a second pair.
+
+### Account and device management (`src/WorkLedger.Server/Auth/AccountEndpoints.cs`)
+
+S8's four authenticated routes, all scoped by the token alone. Three of them kill tokens and each evicts
+the affected `TokenRevocation` cache keys **after** its write commits, so revocation is immediate rather
+than lagging `Auth:StampCacheSeconds` — the S8 tests deliberately run with the cache at its default, so
+they fail if that eviction is dropped. Two behaviours look wrong and are not:
+
+- **`DELETE /auth/devices/{deviceId}` does not touch the device's synced rows.** Projects/tasks/entries
+  belong to the user; `OriginDeviceId` is provenance, not ownership. Removing a device revokes its access
+  and nothing else, and the device re-enrolls by logging in again. Deleting your *own* current device is
+  allowed and means "sign this device out" — don't "fix" it with a guard.
+- **`DELETE /auth/account` is a hard delete with two independent gates** — the current password (401) and
+  a typed `ConfirmEmail` (400) — then `TimeEntries` → `TaskItems` → `Projects` → `Devices` → `User`, one
+  `ExecuteDeleteAsync` each inside one explicit transaction. The FKs are already `ON DELETE CASCADE`; the
+  explicit children-first order is what makes the endpoint independent of that and what produces the
+  per-table counts in its single warning line. **That line carries the user id and never the email**, for
+  the same reason the request log records only method/path/status. A push racing the delete cannot leave
+  orphans — see the endpoint's XML doc for why no row lock is taken.
 
 ### Sync (`src/WorkLedger.Server/Sync/`)
 
@@ -168,7 +189,8 @@ own repo). Consequences:
   `WhoAmIResponse.AccountId` renamed to `UserId` (a breaking change), plus the new `RegisterUserRequest`,
   `UserSummary` and `AuthCapabilitiesResponse` — and S7's login contract: `RegisterDeviceRequest` and
   `RegisterDeviceResponse` **deleted**, the new `LoginRequest`, `LoginResponse` and
-  `ChangePasswordRequest`, and `WhoAmIResponse` widened to `(UserId, Email, DisplayName, DeviceId)`.
+  `ChangePasswordRequest`, and `WhoAmIResponse` widened to `(UserId, Email, DisplayName, DeviceId)` —
+  and S8's account-management contract: the new `DeviceSummary` and `DeleteAccountRequest`.
   None of it is on the client.
   **S9 re-vendors all of it in one pass**, deliberately: S6–S8 each change `WorkLedger.Contracts`, and
   re-taking the copy three times would hand the client three breaking updates instead of one. Re-check
