@@ -9,18 +9,21 @@ namespace WorkLedger.Server.Tests.Auth;
 /// <summary>
 /// A Postgres container of its own, plus a host built per test.
 /// <para>
-/// <b>Why this cannot share <see cref="AuthWebAppFixture"/>.</b> Three S6 behaviours are answers about
-/// the <i>whole database</i> rather than about one row: <c>/auth/register-device</c> returns 410 beyond
-/// one user, <c>/auth/claim</c> needs exactly one credential-less user, and
-/// <c>/auth/capabilities</c> reports <c>HasUnclaimedAccount</c> off the same count. A suite asserting on
-/// those cannot run against a database other suites are adding users to, so it gets a private one and
+/// <b>Why this cannot share <see cref="AuthWebAppFixture"/>.</b> Several behaviours here are answers
+/// about the <i>whole database</i> rather than about one row: <c>/auth/claim</c> needs exactly one
+/// credential-less user, <c>/auth/capabilities</c> reports <c>HasUnclaimedAccount</c> off the same
+/// count, and login's account-lockout and rate-limit assertions need a user nothing else is signing in
+/// as. A suite asserting on those cannot run against a database other suites are adding users to, and
+/// it must not share a rate limiter with them either, so it gets a private database and
 /// <see cref="ResetAsync"/> clears it between tests. Test cases in one xUnit class never run
 /// concurrently, so the reset is a clean slate rather than a race.
 /// </para>
 /// <para>
 /// Hosts are built per test because the assertions <i>are</i> about configuration —
-/// <c>Auth:RegistrationEnabled</c> in both positions, overridden lockout numbers — and a
-/// WebApplicationFactory bakes its configuration in at startup. The schema is migrated once here, so
+/// <c>Auth:RegistrationEnabled</c> in both positions, overridden lockout numbers, a tiny lockout window,
+/// a stamp cache switched off, a rate limit of three — and a WebApplicationFactory bakes its
+/// configuration in at startup. A fresh host also means a fresh rate limiter and a fresh stamp cache,
+/// so one test cannot exhaust or poison the next one's. The schema is migrated once here, so
 /// those hosts start with <c>Database:MigrateOnStartup=false</c> and cost almost nothing.
 /// </para>
 /// </summary>

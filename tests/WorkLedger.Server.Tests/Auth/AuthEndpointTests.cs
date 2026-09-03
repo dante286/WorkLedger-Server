@@ -10,9 +10,9 @@ namespace WorkLedger.Server.Tests.Auth;
 /// The token pipeline: the fallback authorization policy, and a token resolving to the right
 /// <c>(user_id, device_id)</c> pair.
 /// <para>
-/// <c>/auth/register-device</c>'s own behaviour moved to <see cref="RegistrationEndpointTests"/> in S6,
-/// because it now depends on how many users the whole database holds and this collection's database is
-/// shared. What is left here is the plumbing every other suite's tokens ride on.
+/// Token <i>issuing</i> lives in <see cref="LoginEndpointTests"/>, against a private database — it
+/// depends on credentials and on how many users the whole database holds, and this collection's
+/// database is shared. What is left here is the plumbing every other suite's tokens ride on.
 /// </para>
 /// </summary>
 [Collection(nameof(AuthCollection))]
@@ -33,7 +33,7 @@ public class AuthEndpointTests(AuthWebAppFixture fixture)
     {
         var foreign = new Server.Auth.JwtTokenService(new Server.Auth.JwtOptions(
             "a-completely-different-signing-key-0123456789", TestConfig.JwtIssuer, TestConfig.JwtAudience, 1));
-        var (token, _) = foreign.IssueToken(1, 1, "impostor");
+        var (token, _) = foreign.IssueToken(1, 1, "impostor", Guid.NewGuid().ToString());
 
         var client = fixture.Factory.CreateClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);

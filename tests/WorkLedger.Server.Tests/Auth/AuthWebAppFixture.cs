@@ -18,12 +18,12 @@ namespace WorkLedger.Server.Tests.Auth;
 /// its own through <see cref="NewUserAsync"/> / <see cref="EnrollDeviceAsync"/>.
 /// </para>
 /// <para>
-/// <b>Why these mint tokens instead of calling <c>POST /auth/register-device</c>.</b> That endpoint now
-/// only works while <i>exactly one</i> user exists — it returns 410 beyond that, deliberately, rather
-/// than guessing which account a device belongs to. Every class in this collection shares one database,
-/// so the first test to create a second user would otherwise break enrollment for all the others.
-/// Minting directly also gives each test its own user, which is what keeps one test's time entries out
-/// of another's report total. The endpoint's own behaviour is covered against a private database in
+/// <b>Why these mint tokens instead of calling <c>POST /auth/login</c>.</b> Logging in needs an email
+/// and a password, and none of the suites riding on this fixture — sync, reports, the token plumbing —
+/// care about credentials: tenancy comes from the token's <c>user_id</c>. Minting directly gives each
+/// test its own credential-less user, which is what keeps one test's time entries out of another's
+/// report total, and costs no PBKDF2 work per test. Login's own behaviour, which <i>is</i> about
+/// credentials and about how many users the database holds, is covered against a private database in
 /// <see cref="UserAccountsFixture"/>'s suites.
 /// </para>
 /// </summary>
@@ -106,7 +106,14 @@ public sealed class AuthWebAppFixture : IAsyncLifetime
         db.Devices.Add(device);
         await db.SaveChangesAsync();
 
-        var (token, _) = Tokens.IssueToken(userId, device.Id, device.DeviceId);
+        // The stamp has to be the one actually stored: TokenRevocation compares every request's claim
+        // against this column, so a minted token carrying anything else is dead on arrival.
+        var securityStamp = await db.Users
+            .Where(u => u.Id == userId)
+            .Select(u => u.SecurityStamp)
+            .SingleAsync();
+
+        var (token, _) = Tokens.IssueToken(userId, device.Id, device.DeviceId, securityStamp);
         var client = Factory.CreateClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
         return new EnrolledDevice(userId, device.DeviceId, client);

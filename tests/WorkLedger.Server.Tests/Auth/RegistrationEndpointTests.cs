@@ -8,9 +8,9 @@ using WorkLedger.Server.Data.Entities;
 namespace WorkLedger.Server.Tests.Auth;
 
 /// <summary>
-/// <c>POST /auth/register</c>, <c>POST /auth/claim</c>, <c>GET /auth/capabilities</c> and the
-/// <c>/auth/register-device</c> fence — every S6 behaviour that is an answer about how many users the
-/// database holds. See <see cref="UserAccountsFixture"/> for why they need a database of their own.
+/// <c>POST /auth/register</c>, <c>POST /auth/claim</c> and <c>GET /auth/capabilities</c> — every S6
+/// behaviour that is an answer about how many users the database holds. See
+/// <see cref="UserAccountsFixture"/> for why they need a database of their own.
 /// </summary>
 [Collection(nameof(UserAccountsCollection))]
 public class RegistrationEndpointTests(UserAccountsFixture fixture) : IAsyncLifetime
@@ -293,6 +293,21 @@ public class RegistrationEndpointTests(UserAccountsFixture fixture) : IAsyncLife
         Assert.Equal(60, capabilities.LockoutMinutes);
     }
 
+    /// <summary>
+    /// The lockout window binds fractionally so the S7 suite can wait one out (see
+    /// <c>AuthOptions.LockoutWindow</c>), but the wire field is whole minutes and rounds <b>up</b> — a
+    /// three-second window must not advertise as "try again in 0 minutes".
+    /// </summary>
+    [Fact]
+    public async Task Capabilities_RoundsASubMinuteLockoutWindowUp()
+    {
+        using var host = fixture.CreateHost(("Auth:LockoutMinutes", "0.05"));
+
+        var capabilities = await GetCapabilitiesAsync(host);
+
+        Assert.Equal(1, capabilities.LockoutMinutes);
+    }
+
     [Fact]
     public async Task Capabilities_HasUnclaimedAccount_TracksTheLegacyRow()
     {
@@ -317,38 +332,35 @@ public class RegistrationEndpointTests(UserAccountsFixture fixture) : IAsyncLife
     }
 
     /// <summary>
-    /// The fence. Attaching a device to whichever account happens to be oldest is invisible until
-    /// someone else's time entries turn up on your laptop, so the second user turns this into a 410.
+    /// The endpoint is gone, not merely deprecated: S7 replaced it with <c>/auth/login</c>, and its two
+    /// DTOs left <c>WorkLedger.Contracts</c> with it. Asserted rather than assumed, because a shared
+    /// secret that could still mint a token would quietly undo the security improvement of removing it.
+    /// <para>
+    /// Set up as the exact case S6 answered with <c>200</c> and a token — the right secret, exactly one
+    /// user — so a passing assertion means the route is really unreachable rather than merely fenced.
+    /// It comes back <c>401</c> rather than <c>404</c> because Program.cs's authorization fallback policy
+    /// covers requests that match no endpoint at all, which is this app's answer for every unknown path.
+    /// </para>
     /// </summary>
     [Fact]
-    public async Task RegisterDevice_WorksWithOneUserAndGoesAwayWithTwo()
+    public async Task RegisterDevice_IsGone_AndTheBootstrapSecretCanNoLongerMintAToken()
     {
         using var host = fixture.CreateHost();
         var client = host.CreateClient();
         await PostAsync(client, "/auth/register", "first@example.com", GoodPassword, null, fixture.BootstrapSecret);
 
-        var allowed = await RegisterDeviceAsync(client);
-        Assert.Equal(HttpStatusCode.OK, allowed.StatusCode);
-        var token = await allowed.Content.ReadFromJsonAsync<RegisterDeviceResponse>();
-        Assert.False(string.IsNullOrWhiteSpace(token!.Token));
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/auth/register-device")
+        {
+            Content = JsonContent.Create(new { deviceId = Guid.NewGuid().ToString(), label = "gone" }),
+        };
+        request.Headers.Add("X-Bootstrap-Secret", fixture.BootstrapSecret);
 
-        await PostAsync(client, "/auth/register", "second@example.com", GoodPassword, null, fixture.BootstrapSecret);
+        var response = await client.SendAsync(request);
 
-        var fenced = await RegisterDeviceAsync(client);
-        Assert.Equal(HttpStatusCode.Gone, fenced.StatusCode);
-        Assert.Contains("/auth/login", await fenced.Content.ReadAsStringAsync());
-    }
-
-    /// <summary>Zero users is a different failure from too many, and says what to do about it.</summary>
-    [Fact]
-    public async Task RegisterDevice_OnAnEmptyDatabase_Returns409NamingRegister()
-    {
-        using var host = fixture.CreateHost();
-
-        var response = await RegisterDeviceAsync(host.CreateClient());
-
-        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
-        Assert.Contains("/auth/register", await response.Content.ReadAsStringAsync());
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.DoesNotContain("token", await response.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+        using var db = fixture.CreateDbContext();
+        Assert.Equal(0, await db.Devices.CountAsync());
     }
 
     private async Task AssertNoUsers()
@@ -385,16 +397,6 @@ public class RegistrationEndpointTests(UserAccountsFixture fixture) : IAsyncLife
         var response = await host.CreateClient().GetAsync("/auth/capabilities");
         response.EnsureSuccessStatusCode();
         return (await response.Content.ReadFromJsonAsync<AuthCapabilitiesResponse>())!;
-    }
-
-    private static async Task<HttpResponseMessage> RegisterDeviceAsync(HttpClient client)
-    {
-        using var request = new HttpRequestMessage(HttpMethod.Post, "/auth/register-device")
-        {
-            Content = JsonContent.Create(new { deviceId = Guid.NewGuid().ToString(), label = "fence-test" }),
-        };
-        request.Headers.Add("X-Bootstrap-Secret", TestConfig.BootstrapSecret);
-        return await client.SendAsync(request);
     }
 
     /// <summary>

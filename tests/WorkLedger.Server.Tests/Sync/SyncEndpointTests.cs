@@ -15,7 +15,7 @@ namespace WorkLedger.Server.Tests.Sync;
 /// rather than assuming an empty database.
 /// <para>
 /// The user is created here rather than seeded by the host (S6 seeds nothing) and devices are enrolled
-/// through the fixture rather than through <c>POST /auth/register-device</c> — see
+/// through the fixture rather than through <c>POST /auth/login</c> — see
 /// <see cref="AuthWebAppFixture"/> for why. Every merge and scope assertion below is unchanged from S3;
 /// only where the token comes from has moved.
 /// </para>

@@ -17,6 +17,8 @@ public sealed class WorkLedgerDbContext(DbContextOptions<WorkLedgerDbContext> op
         {
             b.Property(x => x.CreatedAt).HasColumnType("timestamptz");
             b.Property(x => x.UpdatedAt).HasColumnType("timestamptz");
+            b.Property(x => x.LockoutEndUtc).HasColumnType("timestamptz");
+            b.Property(x => x.LastLoginUtc).HasColumnType("timestamptz");
 
             // Partial, not plain-unique: unclaimed pre-S6 rows carry a null NormalizedEmail and would
             // otherwise be limited to one per database by a full unique index. See User's XML doc.
