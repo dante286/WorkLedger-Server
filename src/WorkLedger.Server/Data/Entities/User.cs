@@ -40,8 +40,10 @@ public sealed class User
     /// Bumped on any credential change to revoke outstanding tokens. Every token carries the value it
     /// was minted against as its <c>stamp</c> claim, and <c>TokenRevocation</c>'s
     /// <c>OnTokenValidated</c> hook rejects any token whose claim no longer matches this column — so
-    /// changing this string signs every device out at once. <c>POST /auth/password</c> is S7's only
-    /// writer; S8 adds device revocation and logout-all on top of the same mechanism.
+    /// changing this string signs every device out at once. Two endpoints write it:
+    /// <c>POST /auth/password</c> (S7) and <c>POST /auth/logout-all</c> (S8). S8's other two revocations
+    /// — removing a device, deleting the account — ride the same <c>OnTokenValidated</c> check without
+    /// touching this column, because a missing device or user row already fails a token.
     /// </summary>
     public string SecurityStamp { get; set; } = Guid.NewGuid().ToString();
 
