@@ -5,7 +5,7 @@
 #
 # All configuration comes from `.env` (copy `.env.example`). Nothing here has a usable default for a
 # secret: the `:?` interpolations below fail the `up` with a named variable rather than booting an
-# API that anyone can register a device against.
+# API with no signing key, or one whose signup gate is an empty string.
 
 name: workledger
 
@@ -61,8 +61,22 @@ services:
       ConnectionStrings__Postgres: ${ConnectionStrings__Postgres:-}
       Jwt__SigningKey: ${Jwt__SigningKey:?set Jwt__SigningKey in .env (>= 32 bytes; copy .env.example)}
       Jwt__ExpiryDays: ${Jwt__ExpiryDays:-365}
+      # Gates POST /auth/register and POST /auth/claim, and nothing else. Still required: an API
+      # whose signup gate is the empty string is an API with no signup gate.
       Bootstrap__Secret: ${Bootstrap__Secret:?set Bootstrap__Secret in .env (copy .env.example)}
-      Account__Name: ${Account__Name:-Default}
+      # Account policy, all optional and all passed through *blank* when .env does not set them.
+      # That is deliberate rather than lazy: AuthOptions treats a blank value as unset (the same
+      # rule PostgresConnection uses, and for the same reason - compose renders an unset optional
+      # override as ""), so the server's own defaults stay the single place they are written down
+      # instead of being copied here, where they would quietly drift. `.env.example` documents each
+      # one and its default. None of them is required; only secrets get the `:?` treatment.
+      Auth__RegistrationEnabled: ${Auth__RegistrationEnabled:-}
+      REGISTRATIONS_ALLOWED: ${REGISTRATIONS_ALLOWED:-}
+      Auth__MinPasswordLength: ${Auth__MinPasswordLength:-}
+      Auth__MaxFailedLogins: ${Auth__MaxFailedLogins:-}
+      Auth__LockoutMinutes: ${Auth__LockoutMinutes:-}
+      Auth__LoginRateLimitPerMinute: ${Auth__LoginRateLimitPerMinute:-}
+      Auth__StampCacheSeconds: ${Auth__StampCacheSeconds:-}
     ports:
       # Host-side port only. Bind to 127.0.0.1 (API_BIND=127.0.0.1) when a reverse proxy on the same
       # host terminates TLS — see "Putting it behind TLS" in README.md.
