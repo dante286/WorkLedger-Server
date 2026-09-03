@@ -1,11 +1,35 @@
 namespace WorkLedger.Contracts.Auth;
 
-/// <summary>DeviceId is the client's per-install GUID string (see Sync.SyncChangeDto.OriginDeviceId).</summary>
-public sealed record RegisterDeviceRequest(string DeviceId, string? Label);
+/// <summary>
+/// What a person signs in with, plus which install is asking. <c>DeviceId</c> is the client's
+/// per-install GUID string — the same value it already sends as <c>Sync.SyncChangeDto.OriginDeviceId</c>
+/// — because <b>credentials are user-level and tokens are device-level</b>: everything downstream needs
+/// both halves, so the device identity has to arrive with the password rather than in a second call.
+/// </summary>
+public sealed record LoginRequest(string Email, string Password, string DeviceId, string? DeviceLabel);
 
-public sealed record RegisterDeviceResponse(string Token, DateTime ExpiresAtUtc);
+/// <summary>
+/// A minted token scoped to <c>(user, device)</c>, plus who it belongs to so a client can render the
+/// signed-in identity without an immediate <c>/auth/whoami</c>.
+/// <para>
+/// Also what <c>POST /auth/password</c> returns: changing a password bumps the security stamp and so
+/// kills every outstanding token including the caller's own, and handing back a replacement is what
+/// stops that from looking like a bug.
+/// </para>
+/// </summary>
+public sealed record LoginResponse(string Token, DateTime ExpiresAtUtc, UserSummary User);
 
-public sealed record WhoAmIResponse(int UserId, string DeviceId);
+/// <summary>
+/// <see cref="CurrentPassword"/> is re-verified even though the caller already holds a valid token: a
+/// stolen token must not be enough to take the account over.
+/// </summary>
+public sealed record ChangePasswordRequest(string CurrentPassword, string NewPassword);
+
+/// <summary>
+/// Who this token belongs to. Carries the email and display name so a client can show the signed-in
+/// identity from the one call it already makes.
+/// </summary>
+public sealed record WhoAmIResponse(int UserId, string Email, string? DisplayName, string DeviceId);
 
 /// <summary>
 /// The body of both <c>POST /auth/register</c> and <c>POST /auth/claim</c> — creating a user and
@@ -15,7 +39,7 @@ public sealed record RegisterUserRequest(string Email, string Password, string? 
 
 /// <summary>
 /// A created or claimed user. Deliberately carries <b>no token</b>: tokens are device-scoped and minted
-/// by login (S7), and registration is a user-level act with no device to bind one to.
+/// by <c>POST /auth/login</c>, and registration is a user-level act with no device to bind one to.
 /// </summary>
 public sealed record UserSummary(int Id, string Email, string? DisplayName, DateTime CreatedAtUtc);
 
@@ -32,8 +56,14 @@ public sealed record UserSummary(int Id, string Email, string? DisplayName, Date
 /// <para>
 /// <b><see cref="MaxFailedLogins"/> is deliberately not a remaining-attempts count.</b> A remaining
 /// count could only be answered for an account that exists, so returning one would enumerate accounts
-/// and undercut the uniform 401 that login (S7) goes out of its way to produce. Static policy leaks
-/// nothing; per-account state leaks everything.
+/// and undercut the uniform 401 that <c>POST /auth/login</c> goes out of its way to produce. Static
+/// policy leaks nothing; per-account state leaks everything.
+/// </para>
+/// <para>
+/// <b><see cref="LockoutMinutes"/> is whole minutes rounded up</b> from a window the server holds at
+/// finer precision (see the server's <c>AuthOptions.LockoutMinutes</c>, which the test host sets to a
+/// fraction of a minute so a real lockout window is waitable). Widening this field to a fractional type
+/// would put a test affordance on the wire; a client only ever needs "come back in about N minutes".
 /// </para>
 /// </summary>
 public sealed record AuthCapabilitiesResponse(

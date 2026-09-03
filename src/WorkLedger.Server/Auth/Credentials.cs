@@ -54,7 +54,34 @@ internal sealed record Credentials(string Email, string NormalizedEmail, string 
             return false;
         }
 
+        if (!TryValidatePassword(request.Password, auth, out error))
+        {
+            return false;
+        }
+
         var password = request.Password ?? string.Empty;
+        var displayName = request.DisplayName?.Trim();
+        credentials = new Credentials(
+            Email: email,
+            // ToUpperInvariant, not the current culture's casing: the container runs
+            // invariant-globalization, and a culture-sensitive fold would make uniqueness depend on
+            // which machine happened to write the row.
+            NormalizedEmail: email.ToUpperInvariant(),
+            Password: password,
+            DisplayName: string.IsNullOrEmpty(displayName) ? null : displayName);
+        error = string.Empty;
+        return true;
+    }
+
+    /// <summary>
+    /// The password policy on its own, because <c>POST /auth/password</c> has to apply exactly the rules
+    /// registration applies to a new password while having no email or display name to validate. Sharing
+    /// this method rather than the message text is what keeps the two from drifting.
+    /// </summary>
+    public static bool TryValidatePassword(string? password, AuthOptions auth, out string error)
+    {
+        password ??= string.Empty;
+
         if (password.Length < auth.MinPasswordLength)
         {
             error = $"Password must be at least {auth.MinPasswordLength} characters.";
@@ -67,15 +94,6 @@ internal sealed record Credentials(string Email, string NormalizedEmail, string 
             return false;
         }
 
-        var displayName = request.DisplayName?.Trim();
-        credentials = new Credentials(
-            Email: email,
-            // ToUpperInvariant, not the current culture's casing: the container runs
-            // invariant-globalization, and a culture-sensitive fold would make uniqueness depend on
-            // which machine happened to write the row.
-            NormalizedEmail: email.ToUpperInvariant(),
-            Password: password,
-            DisplayName: string.IsNullOrEmpty(displayName) ? null : displayName);
         error = string.Empty;
         return true;
     }

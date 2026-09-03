@@ -37,11 +37,30 @@ public sealed class User
     public string? PasswordHash { get; set; }
 
     /// <summary>
-    /// Bumped on any credential change to revoke outstanding tokens. S6 only stores and defaults it;
-    /// S7 wires the <c>OnTokenValidated</c> check that compares it against the token's claim, and S8 is
-    /// what bumps it (password change, device revocation).
+    /// Bumped on any credential change to revoke outstanding tokens. Every token carries the value it
+    /// was minted against as its <c>stamp</c> claim, and <c>TokenRevocation</c>'s
+    /// <c>OnTokenValidated</c> hook rejects any token whose claim no longer matches this column — so
+    /// changing this string signs every device out at once. <c>POST /auth/password</c> is S7's only
+    /// writer; S8 adds device revocation and logout-all on top of the same mechanism.
     /// </summary>
     public string SecurityStamp { get; set; } = Guid.NewGuid().ToString();
+
+    /// <summary>
+    /// Consecutive failed sign-in attempts. Zeroed on a successful login <b>and</b> once
+    /// <see cref="LockoutEndUtc"/> has passed — see <c>AuthEndpoints</c>' login doc for why the second
+    /// of those is not optional.
+    /// </summary>
+    public int FailedLoginCount { get; set; }
+
+    /// <summary>
+    /// When the current lockout lifts, or null when the account is not locked. Computed <b>once</b>, at
+    /// the moment the failure threshold is crossed, and only read thereafter: re-stamping it on every
+    /// refused attempt would let anything that polls <c>/auth/login</c> hold the account locked forever.
+    /// </summary>
+    public DateTime? LockoutEndUtc { get; set; }
+
+    /// <summary>Last successful login. Informational — nothing keys off it.</summary>
+    public DateTime? LastLoginUtc { get; set; }
 
     /// <summary>Was <c>Account.Name</c>. Optional and free-form — nothing keys off it.</summary>
     public string? DisplayName { get; set; }

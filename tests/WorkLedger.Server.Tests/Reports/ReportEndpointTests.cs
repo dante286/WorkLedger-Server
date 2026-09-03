@@ -546,8 +546,9 @@ public class ReportEndpointTests(AuthWebAppFixture fixture)
         Guid TaskUnderDeletedProject);
 
     /// <summary>
-    /// A fresh User + Device with a token signed the same way the host signs its own. See the class
-    /// note for why these tests cannot use <c>/auth/register-device</c>.
+    /// A fresh User + Device with a token signed the same way the host signs its own. See
+    /// <see cref="AuthWebAppFixture"/> for why these mint tokens rather than calling
+    /// <c>POST /auth/login</c>.
     /// </summary>
     private async Task<TestUser> NewUserAsync()
     {

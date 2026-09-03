@@ -21,8 +21,8 @@ only at `WorkLedger.Contracts` (see S0).
 | S3 | [S3-sync-endpoints.md](S3-sync-endpoints.md) | WL-76 (WL-82/83/84) (done) | S1, S2 |
 | S4 | [S4-reports.md](S4-reports.md) | WL-77 (WL-85/86/87) (done) | S1, S2 |
 | S5 | [S5-deployment-and-docs.md](S5-deployment-and-docs.md) | WL-78 (done) | S3, S4 |
-| S6 | [S6-user-accounts-and-registration.md](S6-user-accounts-and-registration.md) | WL-106 (WL-110/111/112/113/114/115), WL-147 | S5 |
-| S7 | [S7-login-and-device-enrollment.md](S7-login-and-device-enrollment.md) | WL-107 (WL-116/117/118/119/120) | S6 |
+| S6 | [S6-user-accounts-and-registration.md](S6-user-accounts-and-registration.md) | WL-106 (WL-110/111/112/113/114/115), WL-147 (done) | S5 |
+| S7 | [S7-login-and-device-enrollment.md](S7-login-and-device-enrollment.md) | WL-107 (WL-116/117/118/119/120) (done) | S6 |
 | S8 | [S8-account-deletion-and-device-management.md](S8-account-deletion-and-device-management.md) | WL-108 (WL-121/122/123/124/125) | S7 |
 | S9 | [S9-user-accounts-cutover.md](S9-user-accounts-cutover.md) | WL-109 (WL-126…WL-132) | S6, S7, S8 |
 

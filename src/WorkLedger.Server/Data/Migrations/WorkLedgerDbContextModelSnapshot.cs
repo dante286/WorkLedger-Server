@@ -228,6 +228,15 @@ namespace WorkLedger.Server.Data.Migrations
                     b.Property<string>("Email")
                         .HasColumnType("text");
 
+                    b.Property<int>("FailedLoginCount")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime?>("LastLoginUtc")
+                        .HasColumnType("timestamptz");
+
+                    b.Property<DateTime?>("LockoutEndUtc")
+                        .HasColumnType("timestamptz");
+
                     b.Property<string>("NormalizedEmail")
                         .HasColumnType("text");
 

@@ -1,7 +1,10 @@
+using System.Globalization;
 using System.Reflection;
 using System.Text;
+using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using WorkLedger.Server.Auth;
@@ -62,6 +65,9 @@ builder.Services.AddSingleton(sp =>
 
 builder.Services.AddSingleton(sp => AuthOptions.Resolve(sp.GetRequiredService<IConfiguration>()));
 builder.Services.AddSingleton<JwtTokenService>();
+// Backs TokenRevocation's per-device (UserId, SecurityStamp) snapshots, which are what keep the
+// revocation check off the database on every authenticated request.
+builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<PasswordService>();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentContext, CurrentContext>();
@@ -85,12 +91,68 @@ builder.Services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationSc
             IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtOptions.SigningKey)),
             ClockSkew = TimeSpan.FromMinutes(1),
         };
+
+        // Revocation. Runs only after the checks above have all passed, so a forged, expired or
+        // wrong-audience token never reaches the database. See TokenRevocation for what it costs and
+        // what Auth:StampCacheSeconds trades away.
+        options.Events = new JwtBearerEvents
+        {
+            OnTokenValidated = TokenRevocation.OnTokenValidatedAsync,
+        };
     });
+
+// Per-IP throttling for the endpoints that take credentials from an anonymous caller. The per-user
+// lockout in /auth/login defends one account; this defends the box against a caller spraying many
+// emails, and against registration being used to fill the table.
+//
+// NOTE: this partitions on the socket's remote address, so behind a reverse proxy every request looks
+// like it comes from the proxy and the whole deployment shares one bucket. Fixing that means
+// configuring ForwardedHeaders, which is not enabled here on a guess — trusting X-Forwarded-For from
+// an untrusted hop would let a caller partition themselves into an unlimited bucket per fake IP. S9's
+// README covers the proxy setup.
+builder.Services.AddRateLimiter(options =>
+{
+    // Default is 503, which reads as "the server is broken" rather than "you are going too fast".
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
+    options.AddPolicy(AuthEndpoints.RateLimitPolicy, httpContext =>
+    {
+        var auth = httpContext.RequestServices.GetRequiredService<AuthOptions>();
+        if (auth.LoginRateLimitPerMinute <= 0)
+        {
+            // Zero or less means off, the same way Auth:StampCacheSeconds does. A limiter permitting
+            // zero requests would make login unreachable, which is not what an operator typing 0 means.
+            return RateLimitPartition.GetNoLimiter("disabled");
+        }
+
+        return RateLimitPartition.GetFixedWindowLimiter(
+            httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = auth.LoginRateLimitPerMinute,
+                Window = auth.LoginRateLimitWindow,
+                // No queue: a caller past the limit gets an immediate 429 rather than a held-open
+                // connection, and nothing here is worth waiting in line for.
+                QueueLimit = 0,
+            });
+    });
+
+    options.OnRejected = (context, _) =>
+    {
+        var seconds = context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter)
+            ? (int)Math.Ceiling(retryAfter.TotalSeconds)
+            : (int)Math.Ceiling(context.HttpContext.RequestServices
+                .GetRequiredService<AuthOptions>().LoginRateLimitWindow.TotalSeconds);
+        context.HttpContext.Response.Headers.RetryAfter =
+            Math.Max(1, seconds).ToString(CultureInfo.InvariantCulture);
+        return ValueTask.CompletedTask;
+    };
+});
 
 builder.Services.AddAuthorization(options =>
 {
     // Protected by default — endpoints opt out with .AllowAnonymous() (see /, /health, and everything in
-    // Auth/AuthEndpoints.cs except /auth/whoami).
+    // Auth/AuthEndpoints.cs except /auth/whoami and /auth/password).
     options.FallbackPolicy = new AuthorizationPolicyBuilder()
         .RequireAuthenticatedUser()
         .Build();
@@ -107,6 +169,7 @@ using (var validationScope = app.Services.CreateScope())
     validationScope.ServiceProvider.GetRequiredService<JwtOptions>();
     validationScope.ServiceProvider.GetRequiredService<BootstrapOptions>();
     validationScope.ServiceProvider.GetRequiredService<PostgresConnection>();
+    validationScope.ServiceProvider.GetRequiredService<AuthOptions>();
 }
 
 // Migrate only. Nothing is seeded: from S6 a fresh database starts with zero users and the first
@@ -133,6 +196,10 @@ app.Use(async (context, next) =>
 // it managed to read. A future browser client is an explicit decision, not something left already open.
 app.UseAuthentication();
 app.UseAuthorization();
+
+// After authentication so a rejected request is still logged with the identity it presented, and
+// before the endpoints whose .RequireRateLimiting() calls it enforces.
+app.UseRateLimiter();
 
 var version = Assembly.GetExecutingAssembly()
     .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion

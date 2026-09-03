@@ -48,7 +48,7 @@ Three projects (`WorkLedger-Server.slnx`), .NET 10, Minimal APIs, EF Core + Npgs
   `MapAuthEndpoints()` / `MapSyncEndpoints()` / `MapReportEndpoints()`.
 - **`tests/WorkLedger.Server.Tests`** — xUnit, `WebApplicationFactory<Program>` + Testcontainers.
 
-`plans/` holds the S0–S6 build plans (S0–S6 shipped; S7–S9 pending) and is the design record —
+`plans/` holds the S0–S9 build plans (S0–S7 shipped; S8–S9 pending) and is the design record —
 `plans/README.md` explains the cross-repo contract handoff and house style.
 
 ### Deployment (`Dockerfile`, `docker-compose.yml`)
@@ -79,8 +79,29 @@ A `User` row whose `PasswordHash` is null is the **unclaimed pre-S6 tenant** awa
 `POST /auth/claim`; it can never authenticate, and that endpoint is the column's only writer. Read
 `User`'s XML doc before treating those nullable credential columns as an oversight.
 
-`/auth/register-device` is the only token source until S7 adds `POST /auth/login`, and it 410s once
-more than one user exists rather than guessing which account a device belongs to.
+### Tokens: `POST /auth/login` is the only source, and the stamp is what kills one
+
+S7 deleted `/auth/register-device`; **enrollment is now a side effect of logging in**. Login takes the
+client's per-install `DeviceId`, upserts the `Device` row under the authenticated user, and mints a JWT
+carrying `sub` (the device row id), `user_id`, `device_id` and `stamp`. `Bootstrap:Secret` still gates
+`/auth/register` and `/auth/claim` but can no longer mint a token — only a password can.
+
+Tokens are deliberately **long-lived** (`Jwt:ExpiryDays`, default 365) with **no refresh tokens**; see
+`JwtTokenService`'s XML doc for why that was chosen rather than overlooked. What replaces short expiry is
+revocation: `TokenRevocation.OnTokenValidatedAsync` loads the token's device row joined to its user on
+every authenticated request and fails the token if the device is gone, the user id disagrees, or the
+`stamp` claim no longer matches `User.SecurityStamp`. One query, three revocations. It is cached in
+`IMemoryCache` for `Auth:StampCacheSeconds` (default 30, `0` disables) — **that TTL is the revocation
+lag**, and paths that revoke evict the key directly so the common case is immediate. A token minted with
+a stale stamp is dead on arrival, which is why tests that mint their own must read the stored value.
+
+Three login behaviours look wrong until you know why, and all three are stated in full on
+`AuthEndpoints`' login doc: **every failure is the same 401** (unknown email, wrong password and
+credential-less row alike — unlike registration's honest 409, because login needs no secret); **the
+lockout counter resets when the window expires**, not only on success; and **a 423 writes nothing at
+all**, neither incrementing the counter nor re-stamping `LockoutEndUtc`. The last two are what stop an
+account being permanently locked. `Auth:MaxFailedLogins`/`Auth:LockoutMinutes` are enforced from the same
+`AuthOptions` accessor `/auth/capabilities` advertises them from — don't introduce a second pair.
 
 ### Sync (`src/WorkLedger.Server/Sync/`)
 
@@ -143,9 +164,12 @@ own repo). Consequences:
   the *client's* own constants and payload shapes. Nothing automatically detects that the copy has fallen
   behind this repo.
 - **Known drift as of this writing:** the copy is pinned at server commit `3e6e955`; since then this repo
-  added `SyncItemResult.AuthoritativeOperation` (WL-98), `Reports/ReportDtos.cs`, and S6's account
-  contract — `WhoAmIResponse.AccountId` renamed to `UserId` (a breaking change), plus the new
-  `RegisterUserRequest`, `UserSummary` and `AuthCapabilitiesResponse`. None of it is on the client.
+  added `SyncItemResult.AuthoritativeOperation` (WL-98), `Reports/ReportDtos.cs`, S6's account contract —
+  `WhoAmIResponse.AccountId` renamed to `UserId` (a breaking change), plus the new `RegisterUserRequest`,
+  `UserSummary` and `AuthCapabilitiesResponse` — and S7's login contract: `RegisterDeviceRequest` and
+  `RegisterDeviceResponse` **deleted**, the new `LoginRequest`, `LoginResponse` and
+  `ChangePasswordRequest`, and `WhoAmIResponse` widened to `(UserId, Email, DisplayName, DeviceId)`.
+  None of it is on the client.
   **S9 re-vendors all of it in one pass**, deliberately: S6–S8 each change `WorkLedger.Contracts`, and
   re-taking the copy three times would hand the client three breaking updates instead of one. Re-check
   with `git log --oneline <pinned-commit>..HEAD -- src/WorkLedger.Contracts`.
