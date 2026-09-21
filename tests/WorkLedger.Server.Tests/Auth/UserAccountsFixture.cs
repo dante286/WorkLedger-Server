@@ -77,7 +77,7 @@ public sealed class UserAccountsFixture : IAsyncLifetime
     {
         using var db = CreateDbContext();
         await db.Database.ExecuteSqlRawAsync(
-            @"TRUNCATE ""TimeEntries"", ""TaskItems"", ""Projects"", ""Devices"", ""Users"" RESTART IDENTITY CASCADE;");
+            @"TRUNCATE ""TimeEntries"", ""TaskItems"", ""Projects"", ""Devices"", ""Invites"", ""Users"" RESTART IDENTITY CASCADE;");
     }
 }
 

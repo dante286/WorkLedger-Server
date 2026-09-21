@@ -19,8 +19,26 @@ namespace WorkLedger.Server.Auth;
 /// take that empty string as a configured answer.
 /// </para>
 /// </summary>
+/// <param name="SignupSecretEnabled">
+/// Whether <c>X-Bootstrap-Secret</c> still satisfies <c>POST /auth/register</c> (S10). Default
+/// <b>true</b>, which is the pre-invite behaviour exactly — an existing deployment sees no change until
+/// its operator turns this off, at which point an invite becomes the only way to create an account and
+/// the secret's remaining jobs are <c>/auth/claim</c> and <c>POST /admin/bootstrap</c>.
+/// <para>
+/// <b>Turning it off is the point of invites, not an optional extra.</b> While it is on, anyone who was
+/// ever given the secret can still sign themselves up — which is the property invites exist to remove.
+/// It defaults on only so that upgrading does not cut an operator off from their own signup flow before
+/// they have issued anything.
+/// </para>
+/// </param>
+/// <param name="InviteExpiryDays">
+/// The default life of an invite, when the issuing admin does not choose one. Never unlimited: an
+/// invite that never expires is a credential nobody remembers holding.
+/// </param>
 public sealed record AuthOptions(
     bool RegistrationEnabled,
+    bool SignupSecretEnabled,
+    int InviteExpiryDays,
     int MinPasswordLength,
     int MaxFailedLogins,
     double LockoutMinutes,
@@ -35,6 +53,13 @@ public sealed record AuthOptions(
     public const int MaxPasswordLength = 256;
 
     public const int DefaultMinPasswordLength = 12;
+
+    /// <summary>
+    /// How long an invite lasts when the issuing admin does not say. Two weeks is long enough to survive
+    /// a holiday and short enough that a forgotten one stops working before anybody has to remember it.
+    /// </summary>
+    public const int DefaultInviteExpiryDays = 14;
+
     public const int DefaultMaxFailedLogins = 5;
     public const double DefaultLockoutMinutes = 15;
     public const int DefaultStampCacheSeconds = 30;
@@ -86,6 +111,8 @@ public sealed record AuthOptions(
 
     public static AuthOptions Resolve(IConfiguration configuration) => new(
         RegistrationEnabled: Flag(configuration, "Auth:RegistrationEnabled", RegistrationEnabledAlias, @default: true),
+        SignupSecretEnabled: Flag(configuration, "Auth:SignupSecretEnabled", "SIGNUP_SECRET_ENABLED", @default: true),
+        InviteExpiryDays: Number(configuration, "Auth:InviteExpiryDays", DefaultInviteExpiryDays),
         MinPasswordLength: Number(configuration, "Auth:MinPasswordLength", DefaultMinPasswordLength),
         MaxFailedLogins: Number(configuration, "Auth:MaxFailedLogins", DefaultMaxFailedLogins),
         LockoutMinutes: Fraction(configuration, "Auth:LockoutMinutes", DefaultLockoutMinutes),

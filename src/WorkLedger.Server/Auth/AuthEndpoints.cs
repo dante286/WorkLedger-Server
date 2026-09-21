@@ -64,14 +64,17 @@ public static class AuthEndpoints
             var unclaimed = await UnclaimedUser.FindAsync(db, cancellationToken);
             return Results.Ok(new AuthCapabilitiesResponse(
                 RegistrationEnabled: auth.RegistrationEnabled,
-                // Always true today: Bootstrap:Secret is a startup requirement, so there is no
-                // configuration in which signup is open. It is reported rather than hardcoded client-side
-                // so an unauthenticated signup mode stays a server-side decision.
-                RegistrationRequiresSecret: true,
+                // Was hardcoded true until S10, with a comment admitting it. Now it reports whether the
+                // shared secret is actually still accepted, so a server that has moved to invite-only
+                // says so instead of advertising a credential it will refuse.
+                RegistrationRequiresSecret: auth.SignupSecretEnabled,
                 MinPasswordLength: auth.MinPasswordLength,
                 HasUnclaimedAccount: unclaimed is not null,
                 MaxFailedLogins: auth.MaxFailedLogins,
-                LockoutMinutes: auth.ReportedLockoutMinutes));
+                LockoutMinutes: auth.ReportedLockoutMinutes,
+                // Not configurable: a server running this code always takes an invite. It is on the wire
+                // so a client can tell this server from an older one without version-sniffing.
+                RegistrationAcceptsInvite: true));
         }).AllowAnonymous();
 
     /// <summary>
@@ -103,14 +106,59 @@ public static class AuthEndpoints
                 return Error(StatusCodes.Status403Forbidden, "Registration is disabled on this server.");
             }
 
-            if (!SecretMatches(httpRequest, bootstrap))
+            // Two accepted credentials, not two modes: either satisfies this endpoint, and
+            // /auth/capabilities advertises which ones this server will take.
+            var secretAccepted = auth.SignupSecretEnabled && SecretMatches(httpRequest, bootstrap);
+            var inviteToken = request?.InviteToken?.Trim();
+
+            if (!secretAccepted && string.IsNullOrEmpty(inviteToken))
             {
                 return Results.Unauthorized();
+            }
+
+            // Opened here rather than around the insert alone, because the invite has to be locked
+            // before it is inspected and stay locked until it is spent — see the FOR UPDATE below.
+            await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
+            Invite? invite = null;
+            if (!secretAccepted)
+            {
+                invite = await FindInviteForUpdateAsync(db, inviteToken!, cancellationToken);
+
+                // An unknown token is a 401, the same answer as bringing no credential at all: it is
+                // indistinguishable from a typo or a guess, and this endpoint is reachable by anyone.
+                // The 409s below are different — they mean "this really is an invite, and here is what
+                // is wrong with it", which the holder needs in order to go back to whoever sent it.
+                if (invite is null)
+                {
+                    return Results.Unauthorized();
+                }
+
+                if (invite.RedeemedAtUtc is not null)
+                {
+                    return Error(StatusCodes.Status409Conflict, "That invite has already been used.");
+                }
+
+                if (invite.ExpiresAtUtc <= DateTime.UtcNow)
+                {
+                    return Error(StatusCodes.Status409Conflict, "That invite has expired. Ask for a new one.");
+                }
             }
 
             if (!Credentials.TryValidate(request, auth, out var credentials, out var validationError))
             {
                 return Results.BadRequest(new { error = validationError });
+            }
+
+            // Checked after validation because it needs the normalized address, and reported frankly for
+            // the same reason the duplicate-email 409 is: the caller holds a one-time token addressed to
+            // somebody, so there is nothing left to hide, and a vague refusal would send them in circles.
+            if (invite?.NormalizedEmail is { } boundTo &&
+                !string.Equals(boundTo, credentials.NormalizedEmail, StringComparison.Ordinal))
+            {
+                return Error(
+                    StatusCodes.Status409Conflict,
+                    "That invite was issued for a different email address.");
             }
 
             // This 409 does enumerate accounts, which is an accepted tradeoff behind a shared secret on
@@ -158,8 +206,21 @@ public static class AuthEndpoints
                 // Two simultaneous signups for one address both clear the AnyAsync check above; the
                 // partial unique index on NormalizedEmail is what actually settles it. Report the loser
                 // as the conflict it is rather than as a 500.
+                //
+                // The invite is NOT burned by this: the transaction rolls back on dispose, so a
+                // registration that loses the race leaves its invite exactly as it found it.
                 return Error(StatusCodes.Status409Conflict, DuplicateEmail);
             }
+
+            if (invite is not null)
+            {
+                // Stamped, not deleted — who invited whom is most of the reason the table exists.
+                invite.RedeemedAtUtc = now;
+                invite.RedeemedByUserId = user.Id;
+                await db.SaveChangesAsync(cancellationToken);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
 
             // Results.Created would advertise a Location this API does not serve — there is no
             // GET /users/{id}, and S8 has no plans for one.
@@ -490,6 +551,32 @@ public static class AuthEndpoints
         });
 
     private const string DuplicateEmail = "An account with that email already exists.";
+
+    /// <summary>
+    /// The invite matching <paramref name="token"/>, locked for the rest of the caller's transaction, or
+    /// null if there is no such invite.
+    /// <para>
+    /// <b><c>FOR UPDATE</c> is what makes redemption single-use under concurrency.</b> Two registrations
+    /// presenting the same token would otherwise both read it unredeemed and both succeed, creating two
+    /// accounts from one invite. With the lock the second blocks until the first commits, and Postgres
+    /// re-evaluates the row once it is granted, so it sees the stamp and answers <c>409</c>.
+    /// </para>
+    /// <para>
+    /// Matched on the hash, never on the token: the column holds only <c>SingleUseToken.Hash</c> output,
+    /// so this is an indexed equality on a digest and the raw value never reaches a query. Not composed
+    /// with further LINQ, for the reason <c>AdminEndpoints</c> gives — EF would wrap it in a subquery and
+    /// <c>FOR UPDATE</c> has to stay on the outer statement.
+    /// </para>
+    /// </summary>
+    private static async Task<Invite?> FindInviteForUpdateAsync(
+        WorkLedgerDbContext db, string token, CancellationToken cancellationToken)
+    {
+        var hash = SingleUseToken.Hash(token);
+        var invites = await db.Invites
+            .FromSql($"""SELECT * FROM "Invites" WHERE "TokenHash" = {hash} FOR UPDATE""")
+            .ToListAsync(cancellationToken);
+        return invites.SingleOrDefault();
+    }
 
     /// <summary>
     /// Creates the device row or refreshes the existing one, matching on <c>(UserId, DeviceId)</c> — the

@@ -47,8 +47,7 @@ internal sealed record Credentials(string Email, string NormalizedEmail, string 
             return false;
         }
 
-        var at = email.IndexOf('@');
-        if (at <= 0 || at != email.LastIndexOf('@') || at == email.Length - 1)
+        if (!LooksLikeEmail(email))
         {
             error = "Email must contain a single '@' with text on both sides of it.";
             return false;
@@ -71,6 +70,17 @@ internal sealed record Credentials(string Email, string NormalizedEmail, string 
             DisplayName: string.IsNullOrEmpty(displayName) ? null : displayName);
         error = string.Empty;
         return true;
+    }
+
+    /// <summary>
+    /// The email syntax rule on its own, shared so <c>POST /admin/invites</c> can refuse to bind an
+    /// invite to an address that <c>/auth/register</c> would then reject — which would produce an invite
+    /// nobody can redeem and no error saying why. See this type's doc for why the rule is this shallow.
+    /// </summary>
+    public static bool LooksLikeEmail(string email)
+    {
+        var at = email.IndexOf('@');
+        return at > 0 && at == email.LastIndexOf('@') && at != email.Length - 1;
     }
 
     /// <summary>
