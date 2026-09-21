@@ -312,6 +312,15 @@ public class InviteEndpointTests(UserAccountsFixture fixture) : IAsyncLifetime
         Assert.Equal(
             HttpStatusCode.Forbidden,
             (await Authorized(host, memberToken).PostAsJsonAsync("/admin/invites", new InviteRequest())).StatusCode);
+
+        // Revocation too. A member who could delete invites could not read the list to find an id,
+        // but "they would have to guess" is not an access control — the policy is.
+        Assert.Equal(
+            HttpStatusCode.Unauthorized,
+            (await host.CreateClient().DeleteAsync($"/admin/invites/{created.Invite.Id}")).StatusCode);
+        Assert.Equal(
+            HttpStatusCode.Forbidden,
+            (await Authorized(host, memberToken).DeleteAsync($"/admin/invites/{created.Invite.Id}")).StatusCode);
     }
 
     [Fact]

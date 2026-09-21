@@ -314,6 +314,31 @@ give a year-long token a year-long privilege. Do not do that.
     `scripts/smoke-test.ps1` with a second user registered via an invite issued by the first, proving the two
     accounts' data does not mix through the container.
 
+**As built (E).** Five things the plan did not anticipate, recorded so they are not re-derived:
+
+- **The additive-only rule paid off measurably, and the handoff says so with evidence.** Both changed
+  records took their new parameter last and defaulted, so **the client compiles unchanged across the
+  re-vendor** — verified call site by call site in `S10-client-handoff.md`, not asserted. WL-169 was
+  written expecting the opposite ("the vendored copy must be re-taken before it next compiles"), which
+  is true of binary compatibility and not of the source copy the client actually keeps.
+- **The sync audit is stronger than S9's could be.** `git diff 3d27c86..HEAD` over `Sync/`, `Payloads/`
+  and `Reports/` is *empty* — zero bytes since the exact commit the client is pinned at. S9 had to
+  report one XML-doc word change.
+- **`CLAUDE.md`'s drift paragraph was a re-vendor out of date.** It described the pin as `2065662` and
+  the drift as S6–S8; the client re-vendored at `3d27c86` on 2026-09-15 under WL-133. Corrected, along
+  with the anonymous-endpoint list (`/auth/password/reset` is anonymous) and the revocation paragraph
+  (four revocations now, plus the `admin` claim).
+- **Three config keys were undocumented, not two.** Item 19 names `Auth__SignupSecretEnabled` and
+  `Network__TrustedProxies`; `Auth__InviteExpiryDays` and `Auth__PasswordResetExpiryHours` had also
+  accumulated. All four are now in the README table and `.env.example`.
+- **Two `AccountEndpoints` XML docs had gone stale and were fixed here**, since they are the rules'
+  home under the house convention: its class doc still said "there is no admin surface: there is no
+  role in this model that can see another user's devices", and `DELETE /auth/account` had nothing to
+  say about the last administrator. It deliberately has **no** last-admin guard — a sole admin may
+  delete themselves, recoverable because `POST /admin/bootstrap` starts answering again once no admin
+  exists. Guarding it would make the last account on a server undeletable. The README states the
+  limit rather than overclaiming that the deployment can never be left unadministrable.
+
 ## Sequencing
 
 The scope groups are lettered by subject, **not by build order**. Build **B before A**: the invite management
