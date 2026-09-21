@@ -45,6 +45,7 @@ public static class AuthEndpoints
         MapChangePassword(app);
         MapWhoAmI(app);
         app.MapAccountEndpoints();
+        app.MapAdminEndpoints();
     }
 
     /// <summary>
@@ -124,6 +125,17 @@ public static class AuthEndpoints
                 return Error(StatusCodes.Status409Conflict, DuplicateEmail);
             }
 
+            // The first account on an empty database is the administrator (S10). Deterministic, needs
+            // no seed and no configuration, and follows from what this server already promises: nothing
+            // is seeded, and the first registration creates the first user — who on a fresh box is by
+            // definition the person setting it up. A deployment that upgraded into S10 with users
+            // already in it gets its first admin from POST /admin/bootstrap instead.
+            //
+            // Two genuinely simultaneous first registrations can both read zero here and both come out
+            // admin. That is harmless on a brand-new box and is deliberately not guarded: a lock on
+            // every signup to shave a race nobody is running would cost more than the outcome does.
+            var isFirstUser = !await db.Users.AnyAsync(cancellationToken);
+
             var now = DateTime.UtcNow;
             var user = new User
             {
@@ -131,6 +143,7 @@ public static class AuthEndpoints
                 NormalizedEmail = credentials.NormalizedEmail,
                 PasswordHash = passwords.Hash(credentials.Password),
                 DisplayName = credentials.DisplayName,
+                IsAdmin = isFirstUser,
                 CreatedAt = now,
                 UpdatedAt = now,
             };
@@ -296,6 +309,18 @@ public static class AuthEndpoints
             // One condition, two very different causes — no such user, and an unclaimed row with no
             // password to check — and deliberately the same answer for both.
             if (user?.PasswordHash is null)
+            {
+                return InvalidCredentials();
+            }
+
+            // A suspended account (S10) is a third cause answering the same 401. Saying "this account is
+            // suspended" would tell an anonymous caller that the address exists, which is exactly what
+            // the uniform 401 below exists to prevent — the admin who suspended it can see the state on
+            // /admin/users, and the person affected has to ask them either way.
+            //
+            // Checked before the hash is verified, like the lockout, so a suspended account burns no
+            // PBKDF2 cycles; and it writes nothing, so it cannot move the failure counter either.
+            if (user.DisabledAtUtc is not null)
             {
                 return InvalidCredentials();
             }

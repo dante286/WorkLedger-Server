@@ -67,6 +67,45 @@ public sealed class User
     /// <summary>Was <c>Account.Name</c>. Optional and free-form — nothing keys off it.</summary>
     public string? DisplayName { get; set; }
 
+    /// <summary>
+    /// Whether this user may call <c>/admin/*</c> (S10). A bool rather than a role enum: there are two
+    /// levels and no prospect of a third, and an enum would only invite someone to invent a category
+    /// nothing enforces.
+    /// <para>
+    /// <b>This is never carried in a token.</b> Tokens here are long-lived (<c>Jwt:ExpiryDays</c>,
+    /// default 365), so a privilege minted into one would outlive any decision to withdraw it.
+    /// <c>TokenRevocation</c> reads this column on every authenticated request — it already loads the
+    /// row, so this costs nothing — and emits the <c>admin</c> claim onto the validated principal
+    /// itself. A demotion therefore takes effect within <c>Auth:StampCacheSeconds</c> like every other
+    /// revocation, and the demoting endpoint evicts the cache key so in practice it is immediate.
+    /// </para>
+    /// <para>
+    /// <b>How the first one comes to exist.</b> On an empty database the first <c>POST /auth/register</c>
+    /// creates an admin; on a deployment that already had users when S10 landed, they are all non-admin
+    /// and <c>POST /admin/bootstrap</c> promotes the first caller who can present the signup secret.
+    /// <b>The last remaining admin cannot be demoted, disabled or deleted</b> — see
+    /// <c>AdminEndpoints</c> — because a deployment with none is one only <c>psql</c> can repair.
+    /// </para>
+    /// </summary>
+    public bool IsAdmin { get; set; }
+
+    /// <summary>
+    /// When an admin suspended this account, or null for an active one (S10). Suspension is reversible
+    /// and keeps every row; <c>DELETE /admin/users/{id}</c> is the irreversible one.
+    /// <para>
+    /// <b>A timestamp rather than a bool</b> so the audit question "since when" is answerable from the
+    /// row itself, which a bool would throw away for no saving.
+    /// </para>
+    /// <para>
+    /// It revokes access through two separate paths, and both are needed: <c>TokenRevocation</c> fails
+    /// every outstanding token while this is set (so existing sessions die on their next request), and
+    /// <c>POST /auth/login</c> refuses to mint a new one. Login's refusal is the <b>same 401 as a wrong
+    /// password</b> — a distinguishable "this account is suspended" would hand an anonymous caller a
+    /// fact about an account that exists, which is precisely what login's uniform 401 is for.
+    /// </para>
+    /// </summary>
+    public DateTime? DisabledAtUtc { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     public DateTime? UpdatedAt { get; set; }

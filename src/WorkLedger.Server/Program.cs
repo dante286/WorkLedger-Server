@@ -156,6 +156,13 @@ builder.Services.AddAuthorization(options =>
     options.FallbackPolicy = new AuthorizationPolicyBuilder()
         .RequireAuthenticatedUser()
         .Build();
+
+    // The operator role (S10). The claim is not in the token — TokenRevocation puts it on the principal
+    // from the IsAdmin column on every request, so a demotion takes effect without waiting for a
+    // year-long token to expire. See TokenRevocation and AdminEndpoints.
+    options.AddPolicy(TokenRevocation.AdminPolicy, policy => policy
+        .RequireAuthenticatedUser()
+        .RequireClaim(TokenRevocation.AdminClaim, "true"));
 });
 
 var app = builder.Build();

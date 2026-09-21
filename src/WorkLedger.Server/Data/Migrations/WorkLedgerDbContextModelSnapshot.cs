@@ -222,6 +222,9 @@ namespace WorkLedger.Server.Data.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamptz");
 
+                    b.Property<DateTime?>("DisabledAtUtc")
+                        .HasColumnType("timestamptz");
+
                     b.Property<string>("DisplayName")
                         .HasColumnType("text");
 
@@ -230,6 +233,9 @@ namespace WorkLedger.Server.Data.Migrations
 
                     b.Property<int>("FailedLoginCount")
                         .HasColumnType("integer");
+
+                    b.Property<bool>("IsAdmin")
+                        .HasColumnType("boolean");
 
                     b.Property<DateTime?>("LastLoginUtc")
                         .HasColumnType("timestamptz");
@@ -251,6 +257,9 @@ namespace WorkLedger.Server.Data.Migrations
                         .HasColumnType("timestamptz");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("IsAdmin")
+                        .HasFilter("\"IsAdmin\" AND \"DisabledAtUtc\" IS NULL");
 
                     b.HasIndex("NormalizedEmail")
                         .IsUnique()
