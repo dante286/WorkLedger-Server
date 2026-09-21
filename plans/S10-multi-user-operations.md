@@ -212,6 +212,23 @@ give a year-long token a year-long privilege. Do not do that.
     `SingleUseToken` helper built in item 1**, do not write a second one. Duplicating it is how one of the two
     ends up with a subtly weaker token.
 
+    - **The two foreign keys behave differently, and that is the decision** (confirmed on WL-165).
+      `UserId` **cascades** — a reset is meaningless once the account it resets is gone, and there is no
+      audit value in "somebody who no longer exists was once sent a token". `CreatedByUserId` is
+      nullable and **sets null**, like `Invite`'s, because who intervened on an account that *still
+      exists* is worth keeping after that admin's own account goes. Between them, the account-deletion
+      pipelines again need no change.
+    - **`Auth:PasswordResetExpiryHours`** (default 24) — **hours, where an invite gets days**. An invite
+      is an arrangement made in advance; a reset is handed over during a conversation happening now, and
+      one still live a fortnight later is a credential nobody is watching. The unit difference in the
+      config key is the reminder.
+    - **A credential-less pre-S6 row gets a `409` naming `/auth/claim`**, the same answer
+      `POST /auth/password` and `DELETE /auth/account` already give it. Setting a password on a row with
+      no email produces an account that still cannot log in, so the token would be useless and the error
+      would surface far from its cause.
+    - **A suspended user is deliberately not refused.** Reset-then-re-enable is a reasonable order, and
+      the token is worth nothing on its own while `DisabledAtUtc` is set.
+
 12. **`POST /auth/password/reset`** — anonymous, rate-limited under `AuthEndpoints.RateLimitPolicy`. Body
     `ResetPasswordRequest(string ResetToken, string NewPassword)`. Validates the token (unredeemed,
     unexpired), applies the same password policy `/auth/register` and `/auth/password` apply **from the same

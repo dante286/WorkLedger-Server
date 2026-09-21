@@ -99,6 +99,45 @@ namespace WorkLedger.Server.Data.Migrations
                     b.ToTable("Invites");
                 });
 
+            modelBuilder.Entity("WorkLedger.Server.Data.Entities.PasswordReset", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamptz");
+
+                    b.Property<int?>("CreatedByUserId")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("ExpiresAtUtc")
+                        .HasColumnType("timestamptz");
+
+                    b.Property<DateTime?>("RedeemedAtUtc")
+                        .HasColumnType("timestamptz");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedByUserId");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique();
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("PasswordResets");
+                });
+
             modelBuilder.Entity("WorkLedger.Server.Data.Entities.Project", b =>
                 {
                     b.Property<int>("Id")
@@ -333,6 +372,20 @@ namespace WorkLedger.Server.Data.Migrations
                         .WithMany()
                         .HasForeignKey("RedeemedByUserId")
                         .OnDelete(DeleteBehavior.SetNull);
+                });
+
+            modelBuilder.Entity("WorkLedger.Server.Data.Entities.PasswordReset", b =>
+                {
+                    b.HasOne("WorkLedger.Server.Data.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("CreatedByUserId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("WorkLedger.Server.Data.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("WorkLedger.Server.Data.Entities.Project", b =>

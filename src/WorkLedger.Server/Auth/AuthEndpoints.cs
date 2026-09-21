@@ -43,6 +43,7 @@ public static class AuthEndpoints
         MapClaim(app);
         MapLogin(app);
         MapChangePassword(app);
+        MapResetPassword(app);
         MapWhoAmI(app);
         app.MapAccountEndpoints();
         app.MapAdminEndpoints();
@@ -550,7 +551,116 @@ public static class AuthEndpoints
                     currentContext.DeviceId));
         });
 
+    /// <summary>
+    /// Spends a reset token issued by <c>POST /admin/users/{id}/password-reset</c>: sets the new
+    /// password, signs every device out, and returns <c>204</c>.
+    /// <para>
+    /// <b>Anonymous, because the whole point is a caller who cannot authenticate.</b> The token is the
+    /// credential, and it is rate-limited under the same policy as login, registration and claim.
+    /// </para>
+    /// <para>
+    /// <b>Unknown, expired and already-spent tokens are one identical <c>400</c>.</b> Distinguishing
+    /// them would turn an anonymous endpoint into an oracle about which tokens have existed — the same
+    /// reasoning as login's uniform <c>401</c>, and worth the slightly worse error message.
+    /// </para>
+    /// <para>
+    /// <b>No token comes back, unlike <c>POST /auth/password</c>.</b> That one re-mints for the calling
+    /// device because the caller was already signed in on it; here there is no device to mint for — the
+    /// request names none — and signing every device in again is the correct outcome for a credential
+    /// the person had lost control of. The stamp bump is what does it.
+    /// </para>
+    /// <para>
+    /// <b>The lockout counters are cleared.</b> Somebody resetting a password has very often just locked
+    /// themselves out guessing at the old one, and leaving the counter armed would refuse the password
+    /// they set ten seconds earlier.
+    /// </para>
+    /// <para>
+    /// <b>It does not un-suspend anybody.</b> Setting a credential and restoring access are different
+    /// decisions, and only an admin makes the second one.
+    /// </para>
+    /// </summary>
+    private static void MapResetPassword(WebApplication app) =>
+        app.MapPost("/auth/password/reset", async (
+            ResetPasswordRequest? request,
+            WorkLedgerDbContext db,
+            AuthOptions auth,
+            PasswordService passwords,
+            IMemoryCache cache,
+            CancellationToken cancellationToken) =>
+        {
+            var token = request?.ResetToken?.Trim();
+            if (string.IsNullOrEmpty(token))
+            {
+                return Results.BadRequest(
+                    new { error = "A request body with a reset token and a new password is required." });
+            }
+
+            // Validated before the token is looked up, so a caller who has fat-fingered their new
+            // password is told so rather than being made to ask for another token. The token is
+            // single-use, not single-attempt.
+            if (!Credentials.TryValidatePassword(request!.NewPassword, auth, out var validationError))
+            {
+                return Results.BadRequest(new { error = validationError });
+            }
+
+            await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
+            var reset = await FindPasswordResetForUpdateAsync(db, token, cancellationToken);
+            if (reset is null || !reset.IsRedeemable(DateTime.UtcNow))
+            {
+                return Error(StatusCodes.Status400BadRequest, InvalidResetToken);
+            }
+
+            var user = await db.Users.SingleOrDefaultAsync(u => u.Id == reset.UserId, cancellationToken);
+            if (user is null)
+            {
+                // Unreachable while the FK cascades — the reset would have gone with the user. Answered
+                // as the same flat 400 rather than a 500, because from the caller's side an account that
+                // no longer exists and a token that never did are the same dead end.
+                return Error(StatusCodes.Status400BadRequest, InvalidResetToken);
+            }
+
+            var now = DateTime.UtcNow;
+            user.PasswordHash = passwords.Hash(request.NewPassword ?? string.Empty);
+            user.SecurityStamp = Guid.NewGuid().ToString();
+            user.FailedLoginCount = 0;
+            user.LockoutEndUtc = null;
+            user.UpdatedAt = now;
+            reset.RedeemedAtUtc = now;
+
+            await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+
+            // After the commit, never before: evicting first would only let a request already in flight
+            // re-cache the stamp this call just replaced.
+            await TokenRevocation.EvictUserAsync(db, cache, user.Id, cancellationToken);
+
+            return Results.NoContent();
+        }).AllowAnonymous().RequireRateLimiting(RateLimitPolicy);
+
     private const string DuplicateEmail = "An account with that email already exists.";
+
+    /// <summary>
+    /// One message for every way a reset token can fail. See <c>MapResetPassword</c> for why the three
+    /// causes are not distinguished.
+    /// </summary>
+    private const string InvalidResetToken =
+        "That reset link is not valid. It may have expired or already been used — ask for a new one.";
+
+    /// <summary>
+    /// The reset matching <paramref name="token"/>, locked for the rest of the caller's transaction.
+    /// Same pattern, and same reasoning, as <see cref="FindInviteForUpdateAsync"/>: without the lock two
+    /// requests presenting one token both read it unredeemed and both succeed.
+    /// </summary>
+    private static async Task<PasswordReset?> FindPasswordResetForUpdateAsync(
+        WorkLedgerDbContext db, string token, CancellationToken cancellationToken)
+    {
+        var hash = SingleUseToken.Hash(token);
+        var resets = await db.PasswordResets
+            .FromSql($"""SELECT * FROM "PasswordResets" WHERE "TokenHash" = {hash} FOR UPDATE""")
+            .ToListAsync(cancellationToken);
+        return resets.SingleOrDefault();
+    }
 
     /// <summary>
     /// The invite matching <paramref name="token"/>, locked for the rest of the caller's transaction, or

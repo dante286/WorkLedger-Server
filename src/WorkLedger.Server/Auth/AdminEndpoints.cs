@@ -42,10 +42,6 @@ namespace WorkLedger.Server.Auth;
 /// them in. Evicting before the commit would only let a request already in flight re-cache the value
 /// being replaced.
 /// </para>
-/// <para>
-/// <b>Not here yet.</b> <c>POST /admin/users/{id}/password-reset</c> ships with the password-reset
-/// table — an admin route, but with nothing to read or write until that lands.
-/// </para>
 /// </summary>
 public static class AdminEndpoints
 {
@@ -61,6 +57,7 @@ public static class AdminEndpoints
         MapSetUserDisabled(app);
         MapSetUserAdmin(app);
         MapDeleteUser(app);
+        MapIssuePasswordReset(app);
         MapInvites(app);
     }
 
@@ -494,6 +491,89 @@ public static class AdminEndpoints
                 actorId, userId, timeEntries, taskItems, projects, devices, users);
 
             return Results.NoContent();
+        }).RequireAuthorization(TokenRevocation.AdminPolicy);
+
+    /// <summary>
+    /// Mints a single-use token that lets <paramref name="userId"/> set a new password, and returns it
+    /// <b>once</b> for the admin to hand over out of band.
+    /// <para>
+    /// <b>It does not set a password.</b> An endpoint that let an admin choose someone's credential
+    /// would hand them a working impersonation of any account on the box; this hands them a door and
+    /// nothing else. What happens on the far side is between the user and
+    /// <c>POST /auth/password/reset</c>.
+    /// </para>
+    /// <para>
+    /// <b>Issuing a reset invalidates that user's outstanding ones.</b> Otherwise an admin who reissues
+    /// because "the first one did not arrive" leaves two live doors into the same account, and the one
+    /// that went astray is the one nobody is watching. There is at most one live reset per user at any
+    /// moment, by construction.
+    /// </para>
+    /// <para>
+    /// <b>No email is sent</b> — this server has no SMTP, and gaining one is a dependency and a
+    /// decision, not a detail. The admin passes the token on however they are already talking to the
+    /// person. Self-service "forgot my password" is the follow-up that needs mail.
+    /// </para>
+    /// <para>
+    /// A credential-less pre-S6 row gets a <c>409</c> naming <c>/auth/claim</c>, the same answer
+    /// <c>POST /auth/password</c> and <c>DELETE /auth/account</c> give it: setting a password on a row
+    /// with no email would produce an account that still cannot log in, so the token would be useless
+    /// and the error would arrive far from its cause.
+    /// </para>
+    /// <para>
+    /// A <b>suspended</b> user is deliberately <i>not</i> refused. Resetting then re-enabling is a
+    /// reasonable order to do things in, and the token is worth nothing on its own while
+    /// <c>DisabledAtUtc</c> is set — redeeming it changes the password and no more.
+    /// </para>
+    /// </summary>
+    private static void MapIssuePasswordReset(WebApplication app) =>
+        app.MapPost("/admin/users/{userId:int}/password-reset", async (
+            int userId,
+            ICurrentContext currentContext,
+            WorkLedgerDbContext db,
+            AuthOptions auth,
+            ILoggerFactory loggerFactory,
+            CancellationToken cancellationToken) =>
+        {
+            var actorId = currentContext.UserId;
+
+            var user = await db.Users.SingleOrDefaultAsync(u => u.Id == userId, cancellationToken);
+            if (user is null)
+            {
+                return NoSuchUser();
+            }
+
+            if (user.PasswordHash is null)
+            {
+                return AuthEndpoints.Error(
+                    StatusCodes.Status409Conflict,
+                    "That account has no credentials yet, so there is nothing to reset. It is the " +
+                    "pre-user-accounts row; claim it with POST /auth/claim.");
+            }
+
+            await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
+            // At most one live reset per user, so reissuing cannot leave the previous one usable.
+            await db.PasswordResets
+                .Where(r => r.UserId == userId && r.RedeemedAtUtc == null)
+                .ExecuteDeleteAsync(cancellationToken);
+
+            var token = SingleUseToken.Generate();
+            var now = DateTime.UtcNow;
+            var reset = new PasswordReset
+            {
+                TokenHash = SingleUseToken.Hash(token),
+                UserId = userId,
+                CreatedByUserId = actorId,
+                CreatedAt = now,
+                ExpiresAtUtc = now.AddHours(auth.PasswordResetExpiryHours),
+            };
+            db.PasswordResets.Add(reset);
+            await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+
+            Audit(loggerFactory, actorId, "issue-password-reset", userId);
+
+            return Results.Ok(new PasswordResetTokenResponse(token, reset.ExpiresAtUtc));
         }).RequireAuthorization(TokenRevocation.AdminPolicy);
 
     /// <summary>

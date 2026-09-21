@@ -8,6 +8,7 @@ public sealed class WorkLedgerDbContext(DbContextOptions<WorkLedgerDbContext> op
     public DbSet<User> Users => Set<User>();
     public DbSet<Device> Devices => Set<Device>();
     public DbSet<Invite> Invites => Set<Invite>();
+    public DbSet<PasswordReset> PasswordResets => Set<PasswordReset>();
     public DbSet<Project> Projects => Set<Project>();
     public DbSet<TaskItem> TaskItems => Set<TaskItem>();
     public DbSet<TimeEntry> TimeEntries => Set<TimeEntry>();
@@ -51,6 +52,26 @@ public sealed class WorkLedgerDbContext(DbContextOptions<WorkLedgerDbContext> op
 
             b.HasIndex(x => x.TokenHash).IsUnique();
             b.HasIndex(x => x.CreatedByUserId);
+            b.Property(x => x.CreatedAt).HasColumnType("timestamptz");
+            b.Property(x => x.ExpiresAtUtc).HasColumnType("timestamptz");
+            b.Property(x => x.RedeemedAtUtc).HasColumnType("timestamptz");
+        });
+
+        modelBuilder.Entity<PasswordReset>(b =>
+        {
+            // Two different behaviours on purpose — see PasswordReset's XML doc. The reset dies with the
+            // account it resets (nothing left to unlock), but outlives the admin who issued it (the
+            // record of an intervention on an account that still exists is worth keeping). Cascading on
+            // UserId is also what keeps the account-deletion pipelines unaware of this table.
+            b.HasOne<User>().WithMany()
+                .HasForeignKey(x => x.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
+            b.HasOne<User>().WithMany()
+                .HasForeignKey(x => x.CreatedByUserId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            b.HasIndex(x => x.TokenHash).IsUnique();
+            b.HasIndex(x => x.UserId);
             b.Property(x => x.CreatedAt).HasColumnType("timestamptz");
             b.Property(x => x.ExpiresAtUtc).HasColumnType("timestamptz");
             b.Property(x => x.RedeemedAtUtc).HasColumnType("timestamptz");

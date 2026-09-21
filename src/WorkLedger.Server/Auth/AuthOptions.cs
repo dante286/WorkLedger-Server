@@ -35,10 +35,15 @@ namespace WorkLedger.Server.Auth;
 /// The default life of an invite, when the issuing admin does not choose one. Never unlimited: an
 /// invite that never expires is a credential nobody remembers holding.
 /// </param>
+/// <param name="PasswordResetExpiryHours">
+/// The life of a password-reset token — deliberately much shorter than an invite's, and the unit
+/// difference is the reminder of that. See <see cref="DefaultPasswordResetExpiryHours"/>.
+/// </param>
 public sealed record AuthOptions(
     bool RegistrationEnabled,
     bool SignupSecretEnabled,
     int InviteExpiryDays,
+    int PasswordResetExpiryHours,
     int MinPasswordLength,
     int MaxFailedLogins,
     double LockoutMinutes,
@@ -59,6 +64,14 @@ public sealed record AuthOptions(
     /// a holiday and short enough that a forgotten one stops working before anybody has to remember it.
     /// </summary>
     public const int DefaultInviteExpiryDays = 14;
+
+    /// <summary>
+    /// How long a password reset lasts. <b>Hours, where an invite gets days</b> — an invite is an
+    /// arrangement made in advance, a reset is handed over during a conversation happening now, and a
+    /// reset still live a fortnight later is a credential nobody is watching. A day is long enough to
+    /// survive a time zone and an overnight.
+    /// </summary>
+    public const int DefaultPasswordResetExpiryHours = 24;
 
     public const int DefaultMaxFailedLogins = 5;
     public const double DefaultLockoutMinutes = 15;
@@ -113,6 +126,8 @@ public sealed record AuthOptions(
         RegistrationEnabled: Flag(configuration, "Auth:RegistrationEnabled", RegistrationEnabledAlias, @default: true),
         SignupSecretEnabled: Flag(configuration, "Auth:SignupSecretEnabled", "SIGNUP_SECRET_ENABLED", @default: true),
         InviteExpiryDays: Number(configuration, "Auth:InviteExpiryDays", DefaultInviteExpiryDays),
+        PasswordResetExpiryHours: Number(
+            configuration, "Auth:PasswordResetExpiryHours", DefaultPasswordResetExpiryHours),
         MinPasswordLength: Number(configuration, "Auth:MinPasswordLength", DefaultMinPasswordLength),
         MaxFailedLogins: Number(configuration, "Auth:MaxFailedLogins", DefaultMaxFailedLogins),
         LockoutMinutes: Fraction(configuration, "Auth:LockoutMinutes", DefaultLockoutMinutes),
