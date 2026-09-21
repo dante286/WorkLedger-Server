@@ -19,6 +19,14 @@ public sealed class WorkLedgerDbContext(DbContextOptions<WorkLedgerDbContext> op
             b.Property(x => x.UpdatedAt).HasColumnType("timestamptz");
             b.Property(x => x.LockoutEndUtc).HasColumnType("timestamptz");
             b.Property(x => x.LastLoginUtc).HasColumnType("timestamptz");
+            b.Property(x => x.DisabledAtUtc).HasColumnType("timestamptz");
+
+            // Partial, covering exactly the set AdminEndpoints' last-admin guard counts and locks. On a
+            // table this size an index is not about speed — it is that the guard's `FOR UPDATE` should
+            // lock the two or three admin rows rather than take a predicate lock behind a sequential
+            // scan of every user.
+            b.HasIndex(x => x.IsAdmin)
+                .HasFilter("\"IsAdmin\" AND \"DisabledAtUtc\" IS NULL");
 
             // Partial, not plain-unique: unclaimed pre-S6 rows carry a null NormalizedEmail and would
             // otherwise be limited to one per database by a full unique index. See User's XML doc.

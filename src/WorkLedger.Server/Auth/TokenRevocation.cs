@@ -18,7 +18,19 @@ namespace WorkLedger.Server.Auth;
 /// query covers three separate revocations, and S8 gave each of them an endpoint:
 /// <b>account deleted</b> (<c>DELETE /auth/account</c>), <b>device removed</b>
 /// (<c>DELETE /auth/devices/{deviceId}</c>), and <b>stamp bumped</b> (<c>POST /auth/password</c> and
-/// <c>POST /auth/logout-all</c>).
+/// <c>POST /auth/logout-all</c>). S10 added a fourth to the same query: <b>account disabled</b>
+/// (<c>POST /admin/users/{id}/disable</c>).
+/// </para>
+/// <para>
+/// <b>S10 also made this the source of truth for who is an admin.</b> The same row the revocation
+/// check already loads carries <c>IsAdmin</c>, so <see cref="OnTokenValidatedAsync"/> emits the
+/// <see cref="AdminClaim"/> onto the validated principal rather than the claim riding in the token.
+/// That is deliberate: tokens here last a year (see <see cref="JwtTokenService"/>), and an authorization
+/// claim minted into one would outlive any decision to withdraw it. Resolving it per request means a
+/// demotion behaves like every other revocation here — bounded by <c>Auth:StampCacheSeconds</c>, and
+/// immediate in practice because the endpoints that demote evict the key. <b>Nothing this API mints
+/// ever puts that claim in a token</b>, and any inbound claim of that type is stripped before this
+/// decides, so the claim downstream policy sees is always one this method put there.
 /// </para>
 /// <para>
 /// <b>Ordering matters and is guaranteed.</b> <c>OnTokenValidated</c> fires only after the signature,
@@ -41,6 +53,17 @@ internal static class TokenRevocation
 {
     /// <summary>The claim carrying the user's <c>SecurityStamp</c> as of the moment the token was minted.</summary>
     public const string StampClaim = "stamp";
+
+    /// <summary>
+    /// The claim <see cref="OnTokenValidatedAsync"/> adds to the principal for a user whose
+    /// <c>IsAdmin</c> column is set, and which the <see cref="AdminPolicy"/> requires. It is put there
+    /// by this class from the database — never minted into a token, and stripped from the principal if
+    /// a token somehow presents one.
+    /// </summary>
+    public const string AdminClaim = "admin";
+
+    /// <summary>The authorization policy name every <c>/admin/*</c> route requires. Registered in <c>Program.cs</c>.</summary>
+    public const string AdminPolicy = "admin";
 
     public static async Task OnTokenValidatedAsync(TokenValidatedContext context)
     {
@@ -88,6 +111,47 @@ internal static class TokenRevocation
         if (!string.Equals(snapshot.SecurityStamp, claimedStamp, StringComparison.Ordinal))
         {
             context.Fail("Token was revoked by a credential change.");
+            return;
+        }
+
+        if (snapshot.IsDisabled)
+        {
+            // Suspension revokes without touching SecurityStamp, the same way a removed device does:
+            // the account is meant to come back intact when it is re-enabled, and rotating the stamp
+            // would be a credential change it is not.
+            context.Fail("This account is suspended.");
+            return;
+        }
+
+        ApplyAdminClaim(context.Principal!, snapshot.IsAdmin);
+    }
+
+    /// <summary>
+    /// Makes the principal's <see cref="AdminClaim"/> say exactly what the database says, by removing
+    /// any inbound claim of that type first.
+    /// <para>
+    /// <b>The strip is not theatre, even though nothing mints that claim today.</b> This is the one
+    /// claim that grants authority rather than describing identity, so it must be something this method
+    /// decided and not something the request asserted. Costing one pass over the identities buys the
+    /// guarantee unconditionally, instead of resting it on every future change to
+    /// <see cref="JwtTokenService"/> remembering not to add the claim.
+    /// </para>
+    /// </summary>
+    private static void ApplyAdminClaim(ClaimsPrincipal principal, bool isAdmin)
+    {
+        foreach (var identity in principal.Identities)
+        {
+            foreach (var inbound in identity.FindAll(AdminClaim).ToList())
+            {
+                // TryRemoveClaim rather than RemoveClaim: the latter throws for a claim the identity
+                // does not own, and a principal assembled from several identities can hold one.
+                identity.TryRemoveClaim(inbound);
+            }
+        }
+
+        if (isAdmin)
+        {
+            principal.AddIdentity(new ClaimsIdentity([new Claim(AdminClaim, "true")]));
         }
     }
 
@@ -136,7 +200,12 @@ internal static class TokenRevocation
 
         var snapshot = await db.Devices
             .Where(d => d.Id == deviceRowId)
-            .Join(db.Users, d => d.UserId, u => u.Id, (d, u) => new DeviceSnapshot(d.UserId, u.SecurityStamp))
+            .Join(
+                db.Users,
+                d => d.UserId,
+                u => u.Id,
+                (d, u) => new DeviceSnapshot(
+                    d.UserId, u.SecurityStamp, u.IsAdmin, u.DisabledAtUtc != null))
             .SingleOrDefaultAsync(cancellationToken);
 
         if (auth.StampCacheSeconds > 0)
@@ -160,5 +229,11 @@ internal static class TokenRevocation
         return int.TryParse(value, out deviceRowId);
     }
 
-    private sealed record DeviceSnapshot(int UserId, string SecurityStamp);
+    /// <summary>
+    /// What one authenticated request needs to know about the caller, as four columns off the join this
+    /// class was already doing. <c>IsAdmin</c> and <c>IsDisabled</c> ride along rather than earning a
+    /// second query — and because they are cached with the rest of it, every endpoint that changes
+    /// either one has to evict the key (see <see cref="EvictUserAsync"/>).
+    /// </summary>
+    private sealed record DeviceSnapshot(int UserId, string SecurityStamp, bool IsAdmin, bool IsDisabled);
 }

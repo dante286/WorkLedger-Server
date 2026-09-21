@@ -161,15 +161,28 @@ give a year-long token a year-long privilege. Do not do that.
    | `GET /admin/invites` | `InviteSummary[]` — metadata only, never the token or its hash: who created it, the bound address if any, expiry, and whether and by whom it was redeemed. |
    | `DELETE /admin/invites/{id}` | Revoke an unredeemed invite. `204`; `409` for one already redeemed, because revoking it would falsify the audit trail the row exists to keep. |
 
-9. **Self-protection, and the rule that matters more.** Two guards, and they are not the same guard:
-   - **An admin cannot disable, demote or delete *themselves* through `/admin/*`.** `409`, naming
-     `DELETE /auth/account` for the delete case. Not paternalism — these routes exist to act on *other*
-     people, and an admin who wants out has a self-service route that re-verifies their password.
-   - **The last admin cannot be demoted, disabled or deleted, by anyone.** `409`. Without this, one call
-     leaves the deployment with no admin and no way back except `/admin/bootstrap` — which is itself a
-     `409` once an admin exists, so the real recovery would be `psql`, which is the thing this plan removes.
-     This check must be inside the same transaction as the write, counting `IsAdmin && DisabledAtUtc is null`
-     users, or two concurrent demotions each see two admins and both succeed.
+9. **Self-protection and the last-admin guard.** Two guards, and they interact — **the second is
+   unreachable unless the first is narrower than it first looks**:
+   - **An admin cannot *suspend or delete* themselves through `/admin/*`.** `409`, and the delete case
+     names `DELETE /auth/account`. These routes act on *other* people, and an admin who wants out has a
+     self-service route that re-verifies their password.
+   - **Demotion is the deliberate exception: an admin *may* aim it at themselves.** Standing down is an
+     ordinary thing to want and, unlike the other two, has a safe outcome — you keep the account and
+     lose only the role.
+   - **The last admin cannot be demoted, disabled or deleted, by anyone.** `409`. Without it a
+     deployment can be left with none, and the way back is not `/admin/bootstrap` — that is itself a
+     `409` once any admin exists — but `psql`, which is the thing this plan removes. The check goes
+     inside the same transaction as the write, over a
+     `SELECT … WHERE IsAdmin AND DisabledAtUtc IS NULL FOR UPDATE`; a plain `COUNT` at read-committed
+     lets two concurrent demotions each see two admins and both succeed.
+
+   **Why demotion has to be the exception.** The caller of an admin route is always an *active* admin —
+   the policy demands `IsAdmin`, and `TokenRevocation` refuses a suspended user's token outright. So if
+   the self-action guard covered demotion too, the target would always be a second, distinct active
+   admin, the count could never reach `1`, and **the last-admin guard would be dead code**. The
+   invariant would still hold, but by accident, resting entirely on the self-guard and impossible to
+   test. Letting an admin stand down is what gives the invariant a path to defend and a test to prove
+   it.
 
 10. **Every admin write logs one line** at information level: the acting user id, the action, and the target
     user id. **Ids, never emails** — for exactly the reason the S8 deletion line gives, and the reason the
