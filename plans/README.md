@@ -30,6 +30,7 @@ only at `WorkLedger.Contracts` (see S0).
 | S9 | [S9-user-accounts-cutover.md](S9-user-accounts-cutover.md) | WL-109 (WL-126…WL-132) (done) | S6, S7, S8 |
 | — | [S9-client-handoff.md](S9-client-handoff.md) | WL-131 → client epic WL-105 | S9 |
 | S10 | [S10-multi-user-operations.md](S10-multi-user-operations.md) | WL-150 (WL-151…WL-155, subtasks WL-156…WL-172) | S9 |
+| — | [S10-client-handoff.md](S10-client-handoff.md) | WL-172 | S10 |
 
 **S6–S9 are one release: user accounts.** S2 built auth for a single seeded account with devices enrolled by a
 shared secret, and named per-user accounts as the deferred follow-up. S6–S9 are that follow-up — a **user
@@ -79,13 +80,21 @@ client's vendored copy keeps compiling until it is re-taken.
 > lettering: WL-152 → WL-151 → WL-153 → WL-155, with WL-154 independent. The plan's Sequencing section says
 > why B comes before A.
 
+**S10's handoff is much smaller than S9's, and that is the measurable result of the additive-only rule.**
+Where S9 deleted two records and reshaped a third — breaking every call site in `ApiSyncProvider` on
+purpose — S10 added seven records and gave two existing ones a trailing defaulted parameter, so the
+client's build stays green across the re-vendor with no source change at all. See
+[S10-client-handoff.md](S10-client-handoff.md), which checks that claim call site by call site rather
+than asserting it. The same document records the audit that `Sync/`, `Payloads/` and `Reports/` are
+**byte-identical** to the commit the client is pinned at.
+
 ## Cross-repo contract handoff (important)
 
 `WorkLedger.Contracts` is authored in **this** repo (S0). The client **consumes it today**: client Plan 6
 shipped the real `ApiSyncProvider`, and rather than take a package it keeps a **byte-identical vendored copy**
 at `Sync/Contracts/`, with the source commit recorded in `Sync/Contracts/README.md` — pinned at server
-`2065662` as of 2026-08-26. (`ReportDtos.cs` is deliberately not vendored; the client computes its own reports
-and never calls `/reports/*`.) A cross-repo `ProjectReference` was rejected because the client's CI checks out
+`3d27c86`, re-vendored 2026-09-15 under WL-133. (`ReportDtos.cs` is deliberately not vendored; the client
+computes its own reports and never calls `/reports/*`.) A cross-repo `ProjectReference` was rejected because the client's CI checks out
 only its own repo, and this repo publishes no package.
 
 The consequence to keep in mind: **changing `WorkLedger.Contracts` is a two-repo change**, and nothing detects
@@ -94,9 +103,11 @@ drift automatically — the client's `SyncContractGuardTests` only checks the ve
 copy and bumping the pin. S6–S8 changed the contract three times; **S9 is the single cutover pass**, and what
 it produces is [S9-client-handoff.md](S9-client-handoff.md) — the settled inventory of what was added,
 removed and changed, plus the list of client files that break. The re-vendor itself is client-repo work
-(WL-133), and it blocks the rest of client epic WL-105. Publishing the package (S0 sketched the GitHub
-Packages step) is the follow-up that would remove this whole class of problem. Do **not** modify the client
-repo as part of these server plans — read it, coordinate, and land client edits as client-repo work.
+(WL-133), and it blocks the rest of client epic WL-105. **S10 then did the same thing again, cheaply:**
+four scope groups changed the contract, and [S10-client-handoff.md](S10-client-handoff.md) is the single
+pass at the end of them. Publishing the package (S0 sketched the GitHub Packages step) is the follow-up
+that would remove this whole class of problem. Do **not** modify the client repo as part of these server
+plans — read it, coordinate, and land client edits as client-repo work.
 
 ## Contract inputs Claude Code will need
 

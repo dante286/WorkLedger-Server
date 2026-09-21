@@ -13,20 +13,34 @@
     compose wiring, migrations-on-boot, and the fact that a token minted by the container is accepted
     by the container.
 
+    It then does the S10 multi-user leg IF IT CAN ADMINISTER THE TARGET: issue an invite, register a
+    second account with that token and no shared secret, and assert the two accounts cannot see each
+    other's rows. "If it can" is load-bearing -- on a fresh volume the throwaway account is the first
+    user and so an admin; on a deployment that already has one, this script is a stranger and skips
+    the leg rather than promoting itself into somebody else's server. It never demotes or deletes an
+    account it did not create.
+
     Every step asserts; the first failure stops the run with a non-zero exit code, because each step
     depends on the one before it.
 
-    IT CLEANS UP AFTER ITSELF. The account it creates is a throwaway
+    IT CLEANS UP AFTER ITSELF, with one deliberate exception. The account it creates is a throwaway
     (smoke+<timestamp>@example.invalid) and the last step is DELETE /auth/account, which removes that
-    user and everything pushed under it in one transaction. It never touches any other account: it
-    creates one, uses it, and deletes the one it created. Pass -KeepAccount to skip the deletion and
+    user and everything pushed under it in one transaction; the invited account goes first, via
+    DELETE /admin/users/{id}. It never touches any account it did not create.
+
+    THE EXCEPTION IS ONE ROW IN "Invites" PER RUN, and it is the feature working rather than a leak:
+    both user references on an invite are ON DELETE SET NULL, because an invite is the record of how
+    an account came to exist and has to outlive both the admin who issued it and the user who spent
+    it. A redeemed invite also cannot be revoked (409, on purpose). So each run leaves one redeemed
+    invite with two null user ids. Drop the volume if that matters to you. Pass -KeepAccount to skip the deletion and
     leave the account and its rows in place -- useful when you want to poke at the deployment
     afterwards, and it prints the credentials so you can sign in.
 
     Registration must be open on the target (Auth__RegistrationEnabled / REGISTRATIONS_ALLOWED), and
-    the run spends five requests against the per-IP credential rate limit
-    (Auth__LoginRateLimitPerMinute, 10 by default), so back-to-back runs inside one minute can trip a
-    429.
+    the run spends seven requests against the per-IP credential rate limit
+    (Auth__LoginRateLimitPerMinute, 10 by default), so two runs inside one minute can trip a 429.
+    Auth__SignupSecretEnabled may be either way round: the first account registers with the secret if
+    that is accepted and otherwise cannot be created at all, which the script says plainly.
 
 .PARAMETER BaseUrl
     Where the API is. Defaults to http://localhost:<API_PORT from .env, else 8080>.
@@ -36,7 +50,8 @@
     Bootstrap__Secret from .env, then from the environment.
 
 .PARAMETER KeepAccount
-    Skip the closing DELETE /auth/account, leaving the throwaway account and its rows behind.
+    Skip the closing DELETE /auth/account, leaving the throwaway account and its rows behind -- and
+    the invited second account, if the multi-user leg ran.
 
 .PARAMETER Up
     Run `docker compose up -d --build` first, and wait longer for the API to come up.
@@ -186,9 +201,13 @@ if ($Up) {
 }
 
 $exitCode = 0
-# Declared before the try so the catch block can mention it under Set-StrictMode even when the run
-# failed before registration got as far as choosing one.
+# Declared before the try so the catch block can mention them under Set-StrictMode even when the run
+# failed before registration got as far as choosing one. $secondEmail stays null unless the
+# multi-user leg both ran and got as far as creating the account.
 $email = $null
+$secondEmail = $null
+$secondUserId = 0
+$ranInviteLeg = $false
 
 try {
     # --- the deployment is serving ---------------------------------------------------------------
@@ -413,13 +432,145 @@ try {
         (($current.Count -eq 1) -and ($current[0].deviceId -eq $deviceA)) $devices.Text
     Confirm-That 'the label sent at login came back' (@($deviceRows | Where-Object { $_.label -eq "smoke test $deviceA" }).Count -eq 1) $devices.Text
 
+    # --- invites and tenant isolation, if this script is allowed to administer the target ---------
+    Start-Step 'can this run administer the deployment?'
+    $canAdminister = (Invoke-Api -Path '/admin/users' -Token $tokens[$deviceA]).Status -eq 200
+    if (-not $canAdminister) {
+        # An empty database makes its first user an admin, so this is the "fresh volume" path only
+        # incidentally; what it really asks is whether ANYBODY administers this deployment yet. A 409
+        # means somebody does, and it is not us.
+        $bootstrap = Invoke-Api -Method POST -Path '/admin/bootstrap' -Token $tokens[$deviceA] `
+            -Headers @{ 'X-Bootstrap-Secret' = $BootstrapSecret }
+        Confirm-That 'POST /admin/bootstrap answers 204 (promoted) or 409 (already administered)' `
+            (($bootstrap.Status -eq 204) -or ($bootstrap.Status -eq 409)) "status $($bootstrap.Status): $($bootstrap.Text)"
+        $canAdminister = $bootstrap.Status -eq 204
+        if ($canAdminister) {
+            Confirm-That 'the promotion is visible on the very next request, with the same token' `
+                ((Invoke-Api -Path '/admin/users' -Token $tokens[$deviceA]).Status -eq 200)
+        }
+    }
+
+    if (-not $canAdminister) {
+        Start-Step 'skipping the invite leg -- this deployment already has an administrator'
+        Write-Host "      not promoting a throwaway account into somebody else's server" -ForegroundColor Yellow
+    }
+    else {
+        $ranInviteLeg = $true
+        Start-Step 'issuing an invite and registering a second account with it'
+        $secondEmail = "smoke2+$stamp@example.invalid"
+        $invite = Invoke-Api -Method POST -Path '/admin/invites' -Token $tokens[$deviceA] -Body @{
+            Email = $secondEmail; Note = "smoke test $stamp"
+        }
+        Confirm-That 'POST /admin/invites returns 201' ($invite.Status -eq 201) "status $($invite.Status): $($invite.Text)"
+        $inviteToken = [string]$invite.Body.token
+        Confirm-That 'the token comes back exactly once, here' ([bool]$inviteToken) $invite.Text
+        $inviteId = [int]$invite.Body.invite.id
+
+        # The point of the whole feature, and only provable against a real deployment: no secret, no
+        # header, and the account is created anyway.
+        $secondRegistered = Invoke-Api -Method POST -Path '/auth/register' -Body @{
+            Email = $secondEmail; Password = $password; DisplayName = "Smoke invitee $stamp"; InviteToken = $inviteToken
+        }
+        Confirm-That 'registering with the invite and NO bootstrap secret returns 201' `
+            (($secondRegistered.Status -eq 201) -and ($secondRegistered.Body.email -eq $secondEmail)) `
+            "status $($secondRegistered.Status): $($secondRegistered.Text)"
+        $secondUserId = [int]$secondRegistered.Body.id
+
+        $listed = Invoke-Api -Path '/admin/invites' -Token $tokens[$deviceA]
+        $thisInvite = @($listed.Body | Where-Object { $_.id -eq $inviteId })
+        Confirm-That 'the invite is listed as redeemed by the account it created' `
+            (($thisInvite.Count -eq 1) -and ($null -ne $thisInvite[0].redeemedAtUtc) -and ($thisInvite[0].redeemedByUserId -eq $secondUserId)) $listed.Text
+        Confirm-That 'listing invites never returns the token' `
+            (-not ($thisInvite[0].PSObject.Properties.Name -contains 'token')) $listed.Text
+        Confirm-That 'the same invite cannot be spent twice' `
+            ((Invoke-Api -Method POST -Path '/auth/register' -Body @{
+                Email = "smoke3+$stamp@example.invalid"; Password = $password; InviteToken = $inviteToken
+            }).Status -eq 409)
+
+        Start-Step 'the two accounts cannot see each other'
+        $secondDevice = "smoke-c-$stamp"
+        $secondLogin = Invoke-Api -Method POST -Path '/auth/login' -Body @{
+            Email = $secondEmail; Password = $password; DeviceId = $secondDevice; DeviceLabel = 'smoke invitee'
+        }
+        Confirm-That 'the invited account signs in' (($secondLogin.Status -eq 200) -and [bool]$secondLogin.Body.token) `
+            "status $($secondLogin.Status): $($secondLogin.Text)"
+        $secondToken = $secondLogin.Body.token
+
+        # The tenancy invariant, end to end through the container: a device that has never synced
+        # pulls EVERYTHING its user owns, which for this account is nothing at all.
+        $secondPull = Invoke-Api -Path '/sync/pull' -Token $secondToken
+        Confirm-That 'the invited account pulls nothing belonging to the first' `
+            ((@($secondPull.Body.changes).Count -eq 0)) $secondPull.Text
+        Confirm-That 'nor can it address them by SyncId' `
+            ((Invoke-Api -Path "/reports/projects/$projectId" -Token $secondToken).Status -eq 404)
+        Confirm-That 'while the first account still reports its own project' `
+            ((Invoke-Api -Path "/reports/projects/$projectId" -Token $tokens[$deviceA]).Status -eq 200)
+        Confirm-That 'and sees only its own two devices' `
+            (@((Invoke-Api -Path '/auth/devices' -Token $tokens[$deviceA]).Body).Count -eq 2)
+        # The isolation that matters most, and the direction the README's security posture claims:
+        # an admin can act on ACCOUNTS and cannot read their rows. Proving it needs the invited
+        # account to own something, so give it one.
+        $inviteeProjectId = [guid]::NewGuid().ToString()
+        $inviteePush = Invoke-Api -Method POST -Path '/sync/push' -Token $secondToken -Body @{
+            Changes = @(
+                (New-Change -EntityType 'project' -EntityId $inviteeProjectId -Operation 'create' -Version 1 -OriginDeviceId $secondDevice -Payload @{
+                    SyncId = $inviteeProjectId; Name = "Invitee project $stamp"; ProjectCode = 'SMOKE2'
+                    Description = 'Belongs to the invited account'; CreatedAt = $createdAt; UpdatedAt = $null
+                    Version = 1; OriginDeviceId = $secondDevice
+                })
+            )
+        }
+        Confirm-That 'the invited account can push its own row' `
+            (($inviteePush.Status -eq 200) -and ($inviteePush.Body.results[0].accepted)) "status $($inviteePush.Status): $($inviteePush.Text)"
+
+        $adminPull = Invoke-Api -Path '/sync/pull' -Token $tokens[$deviceA]
+        Confirm-That 'the admin does NOT receive the invited account row' `
+            (@($adminPull.Body.changes | Where-Object { $_.entityId -eq $inviteeProjectId }).Count -eq 0) $adminPull.Text
+        Confirm-That 'nor can the admin report on it by SyncId' `
+            ((Invoke-Api -Path "/reports/projects/$inviteeProjectId" -Token $tokens[$deviceA]).Status -eq 404)
+        Confirm-That 'while the invited account reports its own project fine' `
+            ((Invoke-Api -Path "/reports/projects/$inviteeProjectId" -Token $secondToken).Status -eq 200)
+
+        # An admin CAN see that the account exists -- that is the whole surface, and it is counts and
+        # state, never rows.
+        $users = Invoke-Api -Path '/admin/users' -Token $tokens[$deviceA]
+        $invitee = @($users.Body | Where-Object { $_.id -eq $secondUserId })
+        Confirm-That 'GET /admin/users reports the invited account and its device count' `
+            (($invitee.Count -eq 1) -and ($invitee[0].deviceCount -eq 1) -and (-not $invitee[0].isAdmin)) $users.Text
+    }
+
     # --- clean up after ourselves ----------------------------------------------------------------
     if ($KeepAccount) {
         Start-Step 'skipping DELETE /auth/account (-KeepAccount)'
         Write-Host "      account $email left in place; password: $password" -ForegroundColor Yellow
+        if ($secondEmail) {
+            Write-Host "      invited account $secondEmail too, same password" -ForegroundColor Yellow
+        }
         Write-Host "      project $projectId stays with it; docker compose down -v drops everything" -ForegroundColor DarkGray
     }
     else {
+        if ($secondEmail) {
+            # The invited account first, and through the admin route -- this is the only place the
+            # script exercises DELETE /admin/users/{id}, and it only ever names an account it created.
+            Start-Step 'DELETE /admin/users/{id} removes the invited account'
+
+            $wrongTargetEmail = Invoke-Api -Method DELETE -Path "/admin/users/$secondUserId" -Token $tokens[$deviceA] -Body @{
+                ConfirmEmail = $email
+            }
+            Confirm-That 'a ConfirmEmail belonging to a different account is 400, even though it is a real address' `
+                ($wrongTargetEmail.Status -eq 400) "status $($wrongTargetEmail.Status): $($wrongTargetEmail.Text)"
+            Confirm-That 'and the invited account is still there' `
+                ((Invoke-Api -Path '/auth/whoami' -Token $secondToken).Status -eq 200)
+
+            $secondDeleted = Invoke-Api -Method DELETE -Path "/admin/users/$secondUserId" -Token $tokens[$deviceA] -Body @{
+                ConfirmEmail = $secondEmail
+            }
+            Confirm-That 'deletion returns 204' ($secondDeleted.Status -eq 204) "status $($secondDeleted.Status): $($secondDeleted.Text)"
+            Confirm-That "the invited account's token is dead immediately" `
+                ((Invoke-Api -Path '/auth/whoami' -Token $secondToken).Status -eq 401)
+            $secondEmail = $null
+        }
+
         Start-Step 'DELETE /auth/account removes the throwaway account and everything under it'
 
         $wrongConfirm = Invoke-Api -Method DELETE -Path '/auth/account' -Token $tokens[$deviceA] -Body @{
@@ -449,13 +600,19 @@ try {
     Write-Host ''
     Write-Host "SMOKE TEST PASSED against $BaseUrl" -ForegroundColor Green
     if (-not $KeepAccount) {
-        Write-Host "      nothing left behind: the throwaway account it created is deleted" -ForegroundColor DarkGray
+        Write-Host "      both accounts it created are deleted" -ForegroundColor DarkGray
+        if ($ranInviteLeg) {
+            Write-Host "      one redeemed row stays in Invites, with null user ids -- by design; see the header" -ForegroundColor DarkGray
+        }
     }
 } catch {
     Write-Host ''
     Write-Host "SMOKE TEST FAILED: $($_.Exception.Message)" -ForegroundColor Red
     if ($email) {
         Write-Host "      the throwaway account $email may still exist -- delete it with DELETE /auth/account, or drop the volume" -ForegroundColor DarkGray
+    }
+    if ($secondEmail) {
+        Write-Host "      so may the invited account $secondEmail -- DELETE /admin/users/$secondUserId, or drop the volume" -ForegroundColor DarkGray
     }
     $exitCode = 1
 } finally {

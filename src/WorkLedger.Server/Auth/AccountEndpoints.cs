@@ -13,9 +13,16 @@ namespace WorkLedger.Server.Auth;
 /// <para>
 /// <b>Every route here is authenticated and scoped entirely by the token.</b> None of them accepts a
 /// user identifier from a body or a URL — the tenancy invariant in <c>CLAUDE.md</c> — so the worst a
-/// caller can do with a crafted request is address something of their own. That is also why there is no
-/// admin surface: there is no role in this model that can see another user's devices, and an operator
-/// with shell access has <c>psql</c>.
+/// caller can do with a crafted request is address something of their own.
+/// </para>
+/// <para>
+/// <b>S10 added an operator surface, and it did not change that.</b> <see cref="AdminEndpoints"/> does
+/// take target ids, but it is a different file behind a different policy; nothing here grew a way to
+/// name another user. The division is worth keeping: these four routes remain provably
+/// self-scoped, which is what makes them safe to reason about in isolation. An earlier version of this
+/// doc said there was no admin surface because no role could see another user's devices — that was
+/// true until S10 and is not any more. <c>GET /admin/users</c> reports device <i>counts</i>; no admin
+/// route lists another user's devices, or reads any of their data.
 /// </para>
 /// <para>
 /// <b>Revocation is evicted, not waited out.</b> Three of these four endpoints kill tokens, and each
@@ -194,6 +201,18 @@ public static class AccountEndpoints
     /// A credential-less pre-S6 row (see <see cref="Data.Entities.User"/>) has no password to verify and
     /// gets the same <c>409</c> naming <c>/auth/claim</c> that <c>POST /auth/password</c> gives it —
     /// refusing in the safe direction, and in practice unreachable since such a row cannot log in.
+    /// <para>
+    /// <b>There is deliberately no last-administrator guard here</b>, unlike on every <c>/admin/*</c>
+    /// route that could remove one (see <see cref="AdminEndpoints"/>). The sole admin may delete their
+    /// own account and leave the server with none. Those two rules are not in conflict: the admin
+    /// guards stop one admin from stripping <i>another</i>, or from stranding a deployment full of
+    /// users it cannot administer, and they are reachable by someone who should be told to promote a
+    /// successor first. This is a person deleting themselves, having passed both gates above, and
+    /// refusing them would be telling someone they may not leave. The state it produces is recoverable
+    /// by design and by exactly the route built for it: with no admin left, <c>POST /admin/bootstrap</c>
+    /// starts answering again, so the next person with the secret can promote themselves. <b>Do not
+    /// "fix" this with a guard</b> — it would make the last account on a server undeletable.
+    /// </para>
     /// <para>
     /// <b>Children first, one <c>ExecuteDeleteAsync</c> per table, inside one explicit transaction.</b>
     /// The FKs are <c>ON DELETE CASCADE</c>, so deleting the user row alone would in fact clear

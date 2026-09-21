@@ -107,6 +107,10 @@ public class AdminEndpointTests(UserAccountsFixture fixture) : IAsyncLifetime
     [InlineData("POST", "/admin/users/1/enable")]
     [InlineData("POST", "/admin/users/1/admin")]
     [InlineData("DELETE", "/admin/users/1/admin")]
+    // The destructive one, listed here rather than only where its behaviour is tested: the policy
+    // runs before the handler, so it refuses without a body and without the ConfirmEmail gate ever
+    // being consulted. That ordering is the whole reason a non-admin cannot probe this route.
+    [InlineData("DELETE", "/admin/users/1")]
     public async Task AdminRoutes_AreForbiddenForANonAdmin_AndUnauthorizedWithoutAToken(
         string method, string path)
     {

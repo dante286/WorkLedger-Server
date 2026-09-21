@@ -44,15 +44,18 @@ Three projects (`WorkLedger-Server.slnx`), .NET 10, Minimal APIs, EF Core + Npgs
   free of server-only packages: the client compiles these same files.
 - **`src/WorkLedger.Server`** — everything wired in `Program.cs` (no controllers): DI, JWT bearer, a
   `FallbackPolicy` that makes every endpoint authenticated unless it opts out with `.AllowAnonymous()`
-  (`/`, `/health`, and everything in `Auth/AuthEndpoints.cs` bar `/auth/whoami` and `/auth/password`),
+  (`/`, `/health`, and everything in `Auth/AuthEndpoints.cs` bar `/auth/whoami` and `/auth/password` —
+  note `/auth/password/reset` **is** anonymous, since its whole premise is a caller with no token),
   then `MapAuthEndpoints()` / `MapSyncEndpoints()` / `MapReportEndpoints()`. `Auth/AccountEndpoints.cs`
-  holds S8's four signed-in routes (devices, logout-all, account deletion) and is mapped from
-  `MapAuthEndpoints()`; none of them opts out of the fallback policy.
+  holds S8's four signed-in routes (devices, logout-all, account deletion) and `Auth/AdminEndpoints.cs`
+  holds S10's operator surface; both are mapped from `MapAuthEndpoints()`, and nothing in either opts
+  out of the fallback policy.
 - **`tests/WorkLedger.Server.Tests`** — xUnit, `WebApplicationFactory<Program>` + Testcontainers.
 
-`plans/` holds the S0–S9 build plans (all shipped) and is the design record — `plans/README.md`
-explains the cross-repo contract handoff and house style. `plans/S9-client-handoff.md` is the
-change list S9 handed the client, and is the authoritative statement of the current wire contract.
+`plans/` holds the S0–S10 build plans (all shipped) and is the design record — `plans/README.md`
+explains the cross-repo contract handoff and house style. **`plans/S10-client-handoff.md` is the
+authoritative statement of the current wire contract**; `plans/S9-client-handoff.md` is the previous
+cutover's and is still the record of what S6–S8 changed.
 
 ### Deployment (`Dockerfile`, `docker-compose.yml`)
 
@@ -72,11 +75,16 @@ document deployment behaviour rather than here. Three things that bite when edit
 ### The auth model in one paragraph
 
 **Credentials are user-level; tokens are device-level.** A person registers once
-(`POST /auth/register`, gated by `Bootstrap:Secret`), then signs in *from a device*
+(`POST /auth/register`, gated by `Bootstrap:Secret` **or**, from S10, a single-use invite token —
+`Auth:SignupSecretEnabled` decides whether the secret is still accepted), then signs in *from a device*
 (`POST /auth/login`) and gets a JWT scoped to that `(user, device)` pair. Nothing else mints a token.
 What replaces short expiry is revocation: `TokenRevocation` re-checks the token's device row joined to
-its user on every authenticated request, so a token dies when the device is gone, the user is gone, or
-the `stamp` claim no longer matches `User.SecurityStamp` — and **`Auth:StampCacheSeconds` is the lag**,
+its user on every authenticated request, so a token dies when the device is gone, the user is gone, the
+user is suspended (`User.DisabledAtUtc`), or the `stamp` claim no longer matches `User.SecurityStamp`.
+The same query carries `User.IsAdmin`, which is emitted as a claim onto the **validated principal** and
+is what the `admin` authorization policy gates `/admin/*` on — **never minted into a token**, because a
+year-long token must not carry a year-long privilege. So a demotion or a suspension bites on the very
+next request. **`Auth:StampCacheSeconds` is the lag**,
 but only for a revocation that happened somewhere else, because the endpoints that revoke evict the
 cache key themselves. The three sections below are the detail; the rules live as XML docs on
 `AuthEndpoints`, `AccountEndpoints`, `TokenRevocation`, `JwtTokenService` and `User`.
@@ -105,8 +113,9 @@ carrying `sub` (the device row id), `user_id`, `device_id` and `stamp`. `Bootstr
 Tokens are deliberately **long-lived** (`Jwt:ExpiryDays`, default 365) with **no refresh tokens**; see
 `JwtTokenService`'s XML doc for why that was chosen rather than overlooked. What replaces short expiry is
 revocation: `TokenRevocation.OnTokenValidatedAsync` loads the token's device row joined to its user on
-every authenticated request and fails the token if the device is gone, the user id disagrees, or the
-`stamp` claim no longer matches `User.SecurityStamp`. One query, three revocations. It is cached in
+every authenticated request and fails the token if the device is gone, the user id disagrees, the user
+is suspended, or the `stamp` claim no longer matches `User.SecurityStamp`. One query, four revocations,
+plus the `admin` claim it puts on the principal. It is cached in
 `IMemoryCache` for `Auth:StampCacheSeconds` (default 30, `0` disables) — **that TTL is the revocation
 lag**, and paths that revoke evict the key directly so the common case is immediate. A token minted with
 a stale stamp is dead on arrival, which is why tests that mint their own must read the stored value.
@@ -198,22 +207,26 @@ own repo). Consequences:
 - The client's `Tests/WorkLedger.Tests/SyncContractGuardTests.cs` only guards the vendored copy against
   the *client's* own constants and payload shapes. Nothing automatically detects that the copy has fallen
   behind this repo.
-- **Known drift:** the copy is pinned at server `2065662` (re-vendored 2026-08-19, WL-100), so the
-  drift is exactly S6–S8's **auth** contract and nothing else: `RegisterDeviceRequest`/`Response`
-  deleted, `WhoAmIResponse` reshaped from `(AccountId, DeviceId)` to
-  `(UserId, Email, DisplayName, DeviceId)`, and eight added records (`RegisterUserRequest`,
-  `UserSummary`, `AuthCapabilitiesResponse`, `LoginRequest`, `LoginResponse`, `ChangePasswordRequest`,
-  `DeviceSummary`, `DeleteAccountRequest`). **`plans/S9-client-handoff.md` is that inventory in full**
-  — read it rather than re-deriving it, and re-check with
-  `git log --oneline <pinned-commit>..HEAD -- src/WorkLedger.Contracts`.
-  Two things the older version of this paragraph got wrong and that are worth not re-asserting:
-  `SyncItemResult.AuthoritativeOperation` (WL-98) **is** on the client and consumed as of WL-101, and
-  `Reports/ReportDtos.cs` is not drift at all — the client deliberately does not vendor it, because it
-  computes its own local reports and never calls `/reports/*`.
-  **S9 re-vendored the whole lot in one pass**, deliberately: S6–S8 each change
-  `WorkLedger.Contracts`, and re-taking the copy three times would have handed the client three
-  breaking updates instead of one. **The sync wire format is unchanged since before S6** — audited
-  file-by-file in S9 (WL-126), not assumed.
+- **Known drift: S10's auth contract, and nothing else.** The copy is pinned at server **`3d27c86`**
+  (re-vendored 2026-09-15, WL-133), which closed the S6–S8 drift this paragraph used to describe.
+  **Do not re-assert that older description** — `RegisterDeviceRequest`/`Response` being deleted and
+  `WhoAmIResponse` being reshaped are on the client already. What is outstanding is S10: seven added
+  records, and two that gained a trailing defaulted parameter (`RegisterUserRequest.InviteToken`,
+  `AuthCapabilitiesResponse.RegistrationAcceptsInvite`). **`plans/S10-client-handoff.md` is that
+  inventory in full**, and `plans/S9-client-handoff.md` remains the record of the previous cutover.
+  Re-check with `git log --oneline 3d27c86..HEAD -- src/WorkLedger.Contracts`.
+  - **S10's re-vendor breaks no client call site** — every one was checked, and both new parameters
+    are last and defaulted. That is a deliberate constraint the whole epic was built under, not luck.
+    S9's was a genuine cutover; do not assume this one is.
+  - `Reports/ReportDtos.cs` is not drift at all — the client deliberately does not vendor it, because
+    it computes its own local reports and never calls `/reports/*`. Nor is
+    `SyncItemResult.AuthoritativeOperation` (WL-98), which is on the client and consumed as of WL-101.
+  - **Each release re-vendors once, at the end**, deliberately: S6–S8 each changed
+    `WorkLedger.Contracts`, and re-taking the copy three times would have handed the client three
+    breaking updates instead of one. S9 was that pass for S6–S8; S10E is that pass for S10.
+  - **The sync wire format is unchanged since before S6.** Audited file-by-file in S9 (WL-126) and
+    again in S10 (WL-172), where `git diff 3d27c86..HEAD -- src/WorkLedger.Contracts/Sync
+    src/WorkLedger.Contracts/Payloads src/WorkLedger.Contracts/Reports` is empty. Not assumed.
 
 ### Server comments that may have gone stale
 
