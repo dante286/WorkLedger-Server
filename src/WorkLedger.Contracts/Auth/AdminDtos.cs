@@ -88,3 +88,16 @@ public sealed record InviteSummary(
     DateTime? RedeemedAtUtc,
     int? RedeemedByUserId,
     string? Note);
+
+/// <summary>
+/// What <c>POST /admin/users/{id}/password-reset</c> returns. <b><see cref="Token"/> appears here and
+/// nowhere else, ever</b> — the server stores only a SHA-256 of it — so this response is the single
+/// opportunity to capture it and hand it to the person who needs it.
+/// <para>
+/// <b>There is no email in this response, and no password.</b> The admin is being given a one-time door
+/// to pass along, not the user's credential: what happens on the far side of it is between the user and
+/// <c>POST /auth/password/reset</c>. <see cref="ExpiresAtUtc"/> is here so the admin can say how long
+/// the person has, which is the first thing they will be asked.
+/// </para>
+/// </summary>
+public sealed record PasswordResetTokenResponse(string Token, DateTime ExpiresAtUtc);

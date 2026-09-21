@@ -136,3 +136,21 @@ public sealed record AuthCapabilitiesResponse(
     int MaxFailedLogins,
     int LockoutMinutes,
     bool RegistrationAcceptsInvite = false);
+
+/// <summary>
+/// The body of <c>POST /auth/password/reset</c>: a token an admin issued out of band, and the password
+/// its holder has chosen.
+/// <para>
+/// <b>No email, and no current password.</b> The token identifies the account by itself — asking for an
+/// address as well would add a second thing to get wrong without adding a second factor, since the
+/// token is already the whole credential. And the point of a reset is that the current password is what
+/// the person no longer has.
+/// </para>
+/// <para>
+/// The reply is <c>204</c> and carries <b>no token</b>. Tokens here are scoped to a <c>(user, device)</c>
+/// pair and this call names no device; every device signs in again, which is the correct outcome for a
+/// credential that had been lost. That is the deliberate difference from <c>POST /auth/password</c>,
+/// which re-mints for the calling device because the caller was already signed in on it.
+/// </para>
+/// </summary>
+public sealed record ResetPasswordRequest(string ResetToken, string NewPassword);
