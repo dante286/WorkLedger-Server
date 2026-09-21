@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using WorkLedger.Contracts.Auth;
 using WorkLedger.Server.Data;
+using WorkLedger.Server.Data.Entities;
 
 namespace WorkLedger.Server.Auth;
 
@@ -42,9 +43,8 @@ namespace WorkLedger.Server.Auth;
 /// being replaced.
 /// </para>
 /// <para>
-/// <b>Not here yet.</b> Invite management (<c>/admin/invites</c>) ships with the invite entity itself,
-/// and <c>POST /admin/users/{id}/password-reset</c> with the password-reset table — both are admin
-/// routes but neither has anything to read or write until those land.
+/// <b>Not here yet.</b> <c>POST /admin/users/{id}/password-reset</c> ships with the password-reset
+/// table — an admin route, but with nothing to read or write until that lands.
 /// </para>
 /// </summary>
 public static class AdminEndpoints
@@ -61,6 +61,7 @@ public static class AdminEndpoints
         MapSetUserDisabled(app);
         MapSetUserAdmin(app);
         MapDeleteUser(app);
+        MapInvites(app);
     }
 
     /// <summary>
@@ -494,6 +495,134 @@ public static class AdminEndpoints
 
             return Results.NoContent();
         }).RequireAuthorization(TokenRevocation.AdminPolicy);
+
+    /// <summary>
+    /// Issue, list and revoke invites (S10) — the replacement for handing a new colleague the operator's
+    /// own <c>Bootstrap:Secret</c>. Admin-only, like everything else in this file.
+    /// <para>
+    /// <b>The raw token leaves the server exactly once</b>, in the <c>201</c> from the create call. Only
+    /// its SHA-256 is stored (see <see cref="SingleUseToken"/>), so there is no route and no query that
+    /// can produce it again — an operator who loses one revokes it and issues another.
+    /// </para>
+    /// </summary>
+    private static void MapInvites(WebApplication app)
+    {
+        app.MapPost("/admin/invites", async (
+            InviteRequest? request,
+            ICurrentContext currentContext,
+            WorkLedgerDbContext db,
+            AuthOptions auth,
+            ILoggerFactory loggerFactory,
+            CancellationToken cancellationToken) =>
+        {
+            var actorId = currentContext.UserId;
+            var email = request?.Email?.Trim();
+
+            // Validated with the same shallow rule registration applies, so an invite cannot be bound to
+            // an address /auth/register would then refuse — which would produce an invite that is
+            // impossible to redeem, and no error explaining why.
+            if (!string.IsNullOrEmpty(email) && !Credentials.LooksLikeEmail(email))
+            {
+                return Results.BadRequest(
+                    new { error = "Email must contain a single '@' with text on both sides of it." });
+            }
+
+            var days = request?.ExpiresInDays ?? auth.InviteExpiryDays;
+            if (days <= 0)
+            {
+                return Results.BadRequest(new { error = "ExpiresInDays must be greater than zero." });
+            }
+
+            var token = SingleUseToken.Generate();
+            var now = DateTime.UtcNow;
+            var invite = new Invite
+            {
+                TokenHash = SingleUseToken.Hash(token),
+                NormalizedEmail = string.IsNullOrEmpty(email) ? null : email.ToUpperInvariant(),
+                CreatedByUserId = actorId,
+                CreatedAt = now,
+                ExpiresAtUtc = now.AddDays(days),
+                Note = string.IsNullOrWhiteSpace(request?.Note) ? null : request.Note.Trim(),
+            };
+            db.Invites.Add(invite);
+            await db.SaveChangesAsync(cancellationToken);
+
+            // Ids only — and not the bound address either. This is the one admin action whose entire
+            // product is a secret, so its log line has to be especially dull.
+            Audit(loggerFactory, actorId, "create-invite", actorId);
+
+            return Results.Json(
+                new InviteResponse(token, Summarize(invite)), statusCode: StatusCodes.Status201Created);
+        }).RequireAuthorization(TokenRevocation.AdminPolicy);
+
+        app.MapGet("/admin/invites", async (
+            WorkLedgerDbContext db,
+            CancellationToken cancellationToken) =>
+        {
+            // Newest first: an operator opening this is almost always looking for the one they just made.
+            var invites = await db.Invites
+                .AsNoTracking()
+                .OrderByDescending(i => i.Id)
+                .Select(i => new InviteSummary(
+                    i.Id,
+                    i.NormalizedEmail,
+                    i.CreatedByUserId,
+                    i.CreatedAt,
+                    i.ExpiresAtUtc,
+                    i.RedeemedAtUtc,
+                    i.RedeemedByUserId,
+                    i.Note))
+                .ToListAsync(cancellationToken);
+
+            return Results.Ok(invites);
+        }).RequireAuthorization(TokenRevocation.AdminPolicy);
+
+        app.MapDelete("/admin/invites/{inviteId:int}", async (
+            int inviteId,
+            ICurrentContext currentContext,
+            WorkLedgerDbContext db,
+            ILoggerFactory loggerFactory,
+            CancellationToken cancellationToken) =>
+        {
+            var invite = await db.Invites.SingleOrDefaultAsync(i => i.Id == inviteId, cancellationToken);
+            if (invite is null)
+            {
+                return AuthEndpoints.Error(StatusCodes.Status404NotFound, "No invite with that id.");
+            }
+
+            if (invite.RedeemedAtUtc is not null)
+            {
+                // Deleting it would erase the record of how a live account came to exist, which is most
+                // of why redeemed rows are kept at all. A spent invite is already unusable, so there is
+                // nothing here to revoke — the caller wanting the account gone wants DELETE
+                // /admin/users/{id} instead.
+                return AuthEndpoints.Error(
+                    StatusCodes.Status409Conflict,
+                    "That invite has already been redeemed. It cannot be used again, and the record of " +
+                    "it is kept deliberately; delete the account it created if that is what you meant.");
+            }
+
+            // Revoking an unredeemed invite IS a hard delete, unlike redeeming, which stamps the row.
+            // There is nothing to preserve: it created nothing, and a tombstone would only clutter the
+            // list an operator reads.
+            db.Invites.Remove(invite);
+            await db.SaveChangesAsync(cancellationToken);
+
+            Audit(loggerFactory, currentContext.UserId, "revoke-invite", currentContext.UserId);
+            return Results.NoContent();
+        }).RequireAuthorization(TokenRevocation.AdminPolicy);
+    }
+
+    /// <summary>The wire shape of an invite, minus the token. Shared so create and list cannot drift.</summary>
+    internal static InviteSummary Summarize(Invite invite) =>
+        new(invite.Id,
+            invite.NormalizedEmail,
+            invite.CreatedByUserId,
+            invite.CreatedAt,
+            invite.ExpiresAtUtc,
+            invite.RedeemedAtUtc,
+            invite.RedeemedByUserId,
+            invite.Note);
 
     /// <summary>
     /// Whether <paramref name="userId"/> is the only admin who can still sign in — an admin row that is

@@ -71,9 +71,21 @@ public sealed record DeleteAccountRequest(string Password, string ConfirmEmail);
 
 /// <summary>
 /// The body of both <c>POST /auth/register</c> and <c>POST /auth/claim</c> — creating a user and
-/// attaching credentials to the pre-S6 legacy row take exactly the same three inputs.
+/// attaching credentials to the pre-S6 legacy row take the same inputs.
+/// <para>
+/// <b><see cref="InviteToken"/> is optional and only <c>/auth/register</c> reads it</b> (S10). It is the
+/// alternative to the operator's <c>X-Bootstrap-Secret</c> header: either satisfies registration, and
+/// which ones a given server will accept is advertised on <see cref="AuthCapabilitiesResponse"/>.
+/// <c>/auth/claim</c> ignores it — claiming is the pre-user-accounts upgrade path, guarded by there
+/// being exactly one credential-less user row, and an invite has nothing to say about that.
+/// </para>
+/// <para>
+/// It rides in the body rather than in a header because, unlike the shared secret, it is <i>this
+/// person's</i> credential for <i>this</i> request — the same reason a password is not a header either.
+/// </para>
 /// </summary>
-public sealed record RegisterUserRequest(string Email, string Password, string? DisplayName);
+public sealed record RegisterUserRequest(
+    string Email, string Password, string? DisplayName, string? InviteToken = null);
 
 /// <summary>
 /// A created or claimed user. Deliberately carries <b>no token</b>: tokens are device-scoped and minted
@@ -98,6 +110,18 @@ public sealed record UserSummary(int Id, string Email, string? DisplayName, Date
 /// policy leaks nothing; per-account state leaks everything.
 /// </para>
 /// <para>
+/// <b><see cref="RegistrationRequiresSecret"/> stopped being hardcoded in S10.</b> It now reports
+/// <c>Auth:SignupSecretEnabled</c>, so a server where invites are the only way in says so instead of
+/// advertising a secret that will be refused. <see cref="RegistrationAcceptsInvite"/> is its companion:
+/// with both true a client offers either path, with only the invite true it asks for a token and hides
+/// the secret field. Both can be true at once — they are two accepted credentials, not two modes.
+/// <para>
+/// <see cref="RegistrationAcceptsInvite"/> defaults to <c>false</c> purely so that adding it does not
+/// change the positional constructor for existing callers; a server that has this field at all sets it
+/// to true.
+/// </para>
+/// </para>
+/// <para>
 /// <b><see cref="LockoutMinutes"/> is whole minutes rounded up</b> from a window the server holds at
 /// finer precision (see the server's <c>AuthOptions.LockoutMinutes</c>, which the test host sets to a
 /// fraction of a minute so a real lockout window is waitable). Widening this field to a fractional type
@@ -110,4 +134,5 @@ public sealed record AuthCapabilitiesResponse(
     int MinPasswordLength,
     bool HasUnclaimedAccount,
     int MaxFailedLogins,
-    int LockoutMinutes);
+    int LockoutMinutes,
+    bool RegistrationAcceptsInvite = false);

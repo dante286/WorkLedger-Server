@@ -7,6 +7,7 @@ public sealed class WorkLedgerDbContext(DbContextOptions<WorkLedgerDbContext> op
 {
     public DbSet<User> Users => Set<User>();
     public DbSet<Device> Devices => Set<Device>();
+    public DbSet<Invite> Invites => Set<Invite>();
     public DbSet<Project> Projects => Set<Project>();
     public DbSet<TaskItem> TaskItems => Set<TaskItem>();
     public DbSet<TimeEntry> TimeEntries => Set<TimeEntry>();
@@ -33,6 +34,26 @@ public sealed class WorkLedgerDbContext(DbContextOptions<WorkLedgerDbContext> op
             b.HasIndex(x => x.NormalizedEmail)
                 .IsUnique()
                 .HasFilter("\"NormalizedEmail\" IS NOT NULL");
+        });
+
+        modelBuilder.Entity<Invite>(b =>
+        {
+            // SET NULL, not the cascade every other table here uses. An invite is a record of how an
+            // account came to exist, so it has to survive the deletion of the admin who issued it and of
+            // the user who redeemed it — see Invite's XML doc. This is also what keeps the two
+            // account-deletion pipelines unchanged: Postgres nulls these columns itself.
+            b.HasOne<User>().WithMany()
+                .HasForeignKey(x => x.CreatedByUserId)
+                .OnDelete(DeleteBehavior.SetNull);
+            b.HasOne<User>().WithMany()
+                .HasForeignKey(x => x.RedeemedByUserId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            b.HasIndex(x => x.TokenHash).IsUnique();
+            b.HasIndex(x => x.CreatedByUserId);
+            b.Property(x => x.CreatedAt).HasColumnType("timestamptz");
+            b.Property(x => x.ExpiresAtUtc).HasColumnType("timestamptz");
+            b.Property(x => x.RedeemedAtUtc).HasColumnType("timestamptz");
         });
 
         modelBuilder.Entity<Device>(b =>

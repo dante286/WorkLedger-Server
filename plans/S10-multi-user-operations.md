@@ -90,6 +90,14 @@ give a year-long token a year-long privilege. Do not do that.
      helper, because the password resets in C reuse it verbatim (see item 11).
    - **The routes that manage invites are admin routes** and are listed with the rest of them in item 8.
      That makes B a prerequisite for part of A — see Sequencing below.
+   - **Both user references are nullable, with `ON DELETE SET NULL`** — not the cascade every other table
+     here uses. An invite is the record of how an account came to exist, so it has to outlive the admin
+     who issued it *and* the user who redeemed it; cascading would destroy that record the first time
+     either account was deleted. This is also what keeps the two account-deletion pipelines untouched:
+     the constraint does the right thing without either of them learning about this table.
+   - **`Auth:InviteExpiryDays`** (default 14) is the expiry an invite gets when the issuing admin does
+     not choose one. There is deliberately **no value meaning "never"** — an invite that cannot expire is
+     a standing credential, which is the thing invites exist to stop being.
 
 2. **`POST /auth/register` accepts an invite token as an alternative to the shared secret.** Add
    `InviteToken` to `RegisterUserRequest` as an optional field (see the contract constraint below). The gate

@@ -40,3 +40,51 @@ public sealed record AdminUserSummary(
 /// </para>
 /// </summary>
 public sealed record AdminDeleteUserRequest(string ConfirmEmail);
+
+/// <summary>
+/// The body of <c>POST /admin/invites</c>. Every field is optional — an invite with none of them set is
+/// a valid open invite on the server's default expiry, which is the common case when an operator is
+/// about to paste a link into a chat window.
+/// </summary>
+/// <param name="Email">
+/// Binds the invite to one address, compared case-insensitively at redemption. Null leaves it
+/// <b>open</b>: anyone holding the token may redeem it, once. Binding guards against a forwarded token
+/// being spent by the wrong person; it is not authentication, since whoever redeems it still chooses
+/// their own password.
+/// </param>
+/// <param name="ExpiresInDays">
+/// Overrides the server's <c>Auth:InviteExpiryDays</c> default for this one invite. There is no value
+/// meaning "never" — an invite that cannot expire is a standing credential, which is the thing invites
+/// exist to stop being.
+/// </param>
+/// <param name="Note">Free-form, for the operator's own benefit when reading the list later.</param>
+public sealed record InviteRequest(string? Email = null, int? ExpiresInDays = null, string? Note = null);
+
+/// <summary>
+/// What creating an invite returns. <b><see cref="Token"/> appears here and nowhere else, ever</b> — the
+/// server stores only a SHA-256 of it, so this response is the single opportunity to capture it. Listing
+/// invites afterwards returns <see cref="InviteSummary"/> alone.
+/// </summary>
+public sealed record InviteResponse(string Token, InviteSummary Invite);
+
+/// <summary>
+/// One invite as <c>GET /admin/invites</c> reports it: everything except the token itself.
+/// <para>
+/// <see cref="RedeemedAtUtc"/> and <see cref="ExpiresAtUtc"/> are given raw rather than reduced to a
+/// status word, because the two dead states are not interchangeable — "already used" and "ran out" send
+/// the person who asks about it somewhere different — and a client can render whichever it prefers.
+/// </para>
+/// <para>
+/// <see cref="CreatedByUserId"/> and <see cref="RedeemedByUserId"/> are null when the account in
+/// question has since been deleted. The invite deliberately outlives both.
+/// </para>
+/// </summary>
+public sealed record InviteSummary(
+    int Id,
+    string? Email,
+    int? CreatedByUserId,
+    DateTime CreatedAtUtc,
+    DateTime ExpiresAtUtc,
+    DateTime? RedeemedAtUtc,
+    int? RedeemedByUserId,
+    string? Note);
