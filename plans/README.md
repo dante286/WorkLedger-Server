@@ -29,6 +29,7 @@ only at `WorkLedger.Contracts` (see S0).
 | S8 | [S8-account-deletion-and-device-management.md](S8-account-deletion-and-device-management.md) | WL-108 (WL-121/122/123/124/125) (done) | S7 |
 | S9 | [S9-user-accounts-cutover.md](S9-user-accounts-cutover.md) | WL-109 (WL-126…WL-132) (done) | S6, S7, S8 |
 | — | [S9-client-handoff.md](S9-client-handoff.md) | WL-131 → client epic WL-105 | S9 |
+| S10 | [S10-multi-user-operations.md](S10-multi-user-operations.md) | WL-150 (WL-151…WL-155, subtasks WL-156…WL-172) | S9 |
 
 **S6–S9 are one release: user accounts.** S2 built auth for a single seeded account with devices enrolled by a
 shared secret, and named per-user accounts as the deferred follow-up. S6–S9 are that follow-up — a **user
@@ -64,6 +65,19 @@ it lands as one release with a documented upgrade path (`POST /auth/claim`, then
   deployment config, reworked the smoke test, and produced the client handoff. Re-vendoring after each of
   S6–S8 would have meant three client PRs chasing a moving contract. It deliberately added **no server
   behaviour** and **did not touch the client repo** — the re-vendor itself is client-repo work (WL-133).
+
+**S10 is the next release, and it is not more tenancy.** S6–S9 finished multi-user, multi-device; S10 builds
+the *operations* layer those plans deliberately deferred while the only user was the operator — invites
+instead of a shared signup secret, an `IsAdmin` operator surface instead of `psql`, admin-issued password
+resets, and the proxy-aware rate limiting Program.cs currently documents as an open problem. It adds no
+tenancy concept and changes no sync or report behaviour, and every contract change is additive so the
+client's vendored copy keeps compiling until it is re-taken.
+
+> **S10 ticket numbers:** epic **WL-150**, one `Task` per scope group (WL-151 invites, WL-152 operator
+> surface, WL-153 password reset, WL-154 rate limiter, WL-155 contract/tests/docs) with subtasks
+> WL-156–WL-172, labelled `server` + `auth`. `Blocks` links encode the build order, which is **not** the
+> lettering: WL-152 → WL-151 → WL-153 → WL-155, with WL-154 independent. The plan's Sequencing section says
+> why B comes before A.
 
 ## Cross-repo contract handoff (important)
 
