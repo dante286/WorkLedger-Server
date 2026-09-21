@@ -126,8 +126,15 @@ give a year-long token a year-long privilege. Do not do that.
 
 ### B. The operator surface
 
-5. **`User.IsAdmin` (bool, default false) + `User.DisabledAtUtc` (timestamptz, null).** One migration with
-   the `Invites` and `PasswordResets` tables.
+5. **`User.IsAdmin` (bool, default false) + `User.DisabledAtUtc` (timestamptz, null).**
+
+   > **Decided 2026-09-21 (WL-150): each scope group brings its own migration.** This item originally
+   > asked for one schema step for the whole release, carrying these columns plus `Invites` and
+   > `PasswordResets`. That does not survive one-PR-per-scope-group — those entities belong to groups
+   > that land separately — and the alternatives were worse than the thing it was avoiding: either hold
+   > B's columns back until C is written, or add a combined-migration pass at the end whose only job is
+   > to undo work already done. EF applies pending migrations in order on boot, so three or four steps
+   > cost an operator nothing over one.
 
 6. **Who becomes the first admin.**
    - **On an empty database**, the user created by the first `POST /auth/register` is an admin. Deterministic,
@@ -348,7 +355,8 @@ feat(auth): add invites, an operator surface and password reset
 > Add an `Invites` table and a `PasswordResets` table, both keyed on a SHA-256 `TokenHash` of a 256-bit
 > random token with a unique index — **not** PBKDF2, because the token is high-entropy and a salted hash
 > cannot be indexed; document that on the entity. Share the generate/hash/lookup/redeem logic in one
-> `SingleUseToken` helper. Add `User.IsAdmin` and `User.DisabledAtUtc` in the same migration.
+> `SingleUseToken` helper. Add `User.IsAdmin` and `User.DisabledAtUtc`. **Each scope group brings its own
+> migration** — see item 5; do not try to land one combined schema step for the release.
 >
 > Make `POST /auth/register` accept a valid invite token **or** the existing `X-Bootstrap-Secret`, redeeming
 > the invite in the same transaction as the user insert so a failed registration does not burn it, and add
