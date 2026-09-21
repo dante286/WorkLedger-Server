@@ -256,7 +256,17 @@ give a year-long token a year-long privilege. Do not do that.
     fake IP, and this must not quietly become that.
 15. **Log one startup line** stating whether forwarded headers are trusted and from where. An operator
     debugging "everyone is getting 429" needs to see, in `docker compose logs`, which of the two modes the
-    server is in.
+    server is in. **Both modes log**, not just the configured one — "I never turned it on" and "I turned it
+    on and it is not working" are the two things an operator needs to tell apart.
+
+    - **A malformed entry fails startup**, naming the value, rather than being skipped. A silently dropped
+      typo leaves an operator believing they configured the proxy they misspelled, and the symptom — one
+      shared bucket again — is indistinguishable from never having configured one.
+    - **Host bits in a CIDR block are *not* an error.** `IPNetwork.Parse` normalizes `10.0.0.5/8` to
+      `10.0.0.0/8` and matching then does what was meant. Verified, not assumed — rejecting it is a
+      plausible-looking "fix" that would refuse input which already works, and there is a test pinning it.
+    - Use **`KnownIPNetworks`**, not `KnownNetworks`: the latter takes ASP.NET's own `IPNetwork` type and is
+      obsolete as of .NET 9 (`ASPDEPR005`).
 
 ### E. Contract, tests, docs
 

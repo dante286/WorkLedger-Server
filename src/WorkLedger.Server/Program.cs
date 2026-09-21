@@ -4,9 +4,11 @@ using System.Text;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using WorkLedger.Server;
 using WorkLedger.Server.Auth;
 using WorkLedger.Server.Data;
 using WorkLedger.Server.Reports;
@@ -101,15 +103,48 @@ builder.Services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationSc
         };
     });
 
+builder.Services.AddSingleton(sp => TrustedProxies.Resolve(sp.GetRequiredService<IConfiguration>()));
+
+// Only consulted when Network:TrustedProxies names something; see below, and TrustedProxies' own doc
+// for why the operator has to say rather than the process guessing.
+builder.Services.AddOptions<ForwardedHeadersOptions>()
+    .Configure<TrustedProxies>((options, trustedProxies) =>
+    {
+        // XForwardedFor ONLY. XForwardedProto and XForwardedHost change how URLs are generated and how
+        // HTTPS is detected; nothing here needs either, and accepting headers you do not consume is how
+        // a proxy misconfiguration turns into a redirect loop nobody can find.
+        options.ForwardedHeaders = ForwardedHeaders.XForwardedFor;
+
+        // One hop. The header is a chain, and each additional hop taken on trust is another address the
+        // caller controls — with a single proxy in front, the last entry is the only one it wrote.
+        options.ForwardLimit = 1;
+
+        // NEVER KnownNetworks.Clear() / KnownProxies.Clear() to "make it work". That is precisely the
+        // change that trusts X-Forwarded-For from anybody and hands every caller an unlimited rate-limit
+        // bucket per address they invent. The defaults (loopback) stay, and the operator's list is added
+        // to them.
+        foreach (var address in trustedProxies.Addresses)
+        {
+            options.KnownProxies.Add(address);
+        }
+
+        foreach (var network in trustedProxies.Networks)
+        {
+            // KnownIPNetworks, not the KnownNetworks property that took ASP.NET's own IPNetwork type —
+            // that one is obsolete as of .NET 9 and warns (ASPDEPR005).
+            options.KnownIPNetworks.Add(network);
+        }
+    });
+
 // Per-IP throttling for the endpoints that take credentials from an anonymous caller. The per-user
 // lockout in /auth/login defends one account; this defends the box against a caller spraying many
 // emails, and against registration being used to fill the table.
 //
-// NOTE: this partitions on the socket's remote address, so behind a reverse proxy every request looks
-// like it comes from the proxy and the whole deployment shares one bucket. Fixing that means
-// configuring ForwardedHeaders, which is not enabled here on a guess — trusting X-Forwarded-For from
-// an untrusted hop would let a caller partition themselves into an unlimited bucket per fake IP. S9's
-// README covers the proxy setup.
+// It partitions on Connection.RemoteIpAddress. Behind a reverse proxy that is the proxy for every
+// request — so the whole deployment would share one bucket — unless Network:TrustedProxies names the
+// hop, in which case the ForwardedHeaders middleware below has already replaced it with the caller's
+// real address. Unset means no forwarded-header processing at all, which is the safe default and the
+// behaviour this had before the setting existed.
 builder.Services.AddRateLimiter(options =>
 {
     // Default is 503, which reads as "the server is broken" rather than "you are going too fast".
@@ -177,6 +212,7 @@ using (var validationScope = app.Services.CreateScope())
     validationScope.ServiceProvider.GetRequiredService<BootstrapOptions>();
     validationScope.ServiceProvider.GetRequiredService<PostgresConnection>();
     validationScope.ServiceProvider.GetRequiredService<AuthOptions>();
+    validationScope.ServiceProvider.GetRequiredService<TrustedProxies>();
 }
 
 // Migrate only. Nothing is seeded: from S6 a fresh database starts with zero users and the first
@@ -186,6 +222,24 @@ if (app.Configuration.GetValue("Database:MigrateOnStartup", true))
     using var scope = app.Services.CreateScope();
     scope.ServiceProvider.GetRequiredService<WorkLedgerDbContext>().Database.Migrate();
 }
+
+// First in the pipeline, before anything reads Connection.RemoteIpAddress — the request log below, and
+// the rate limiter further down. Registered only when the operator has named a proxy: with the setting
+// unset this middleware is absent entirely rather than present-and-trusting-nothing, so there is no
+// behaviour to accidentally change and nothing to pay for.
+var trustedProxies = app.Services.GetRequiredService<TrustedProxies>();
+if (trustedProxies.IsConfigured)
+{
+    app.UseForwardedHeaders();
+}
+
+// Said out loud at startup, both ways. An operator debugging "everyone is getting 429" needs to see
+// which of the two modes they are in without reading the image's configuration back out of it.
+app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup").LogInformation(
+    trustedProxies.IsConfigured
+        ? "Trusting X-Forwarded-For from {TrustedProxies}; rate limits partition on the forwarded client address."
+        : "Not trusting X-Forwarded-For (Network:TrustedProxies is unset); rate limits partition on the socket address, which behind a reverse proxy is one bucket for the whole deployment.",
+    trustedProxies.Describe());
 
 // Method, path and status only. Request.Path excludes the query string and no header is logged, which
 // is what keeps bearer tokens and the X-Bootstrap-Secret out of the log — every secret this API accepts

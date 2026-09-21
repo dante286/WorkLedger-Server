@@ -37,6 +37,14 @@ public sealed class UserAccountsFixture : IAsyncLifetime
 
     public string BootstrapSecret => TestConfig.BootstrapSecret;
 
+    /// <summary>
+    /// This fixture's database, for a suite that needs to build its own
+    /// <see cref="WebApplicationFactory{TEntryPoint}"/> rather than take one from
+    /// <see cref="CreateHost"/> — <c>ProxyRateLimitTests</c> has to register an <c>IStartupFilter</c>
+    /// too, which <see cref="CreateHost"/> deliberately has no parameter for.
+    /// </summary>
+    public string ConnectionString => _container.GetConnectionString();
+
     public async Task InitializeAsync()
     {
         await _container.StartAsync();
