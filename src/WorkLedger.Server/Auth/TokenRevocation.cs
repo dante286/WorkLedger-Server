@@ -48,6 +48,14 @@ namespace WorkLedger.Server.Auth;
 /// when the change came from somewhere this process cannot see — a <c>psql</c> <c>UPDATE</c> against the
 /// volume, or another replica.
 /// </para>
+/// <para>
+/// <b>S11's portal sessions ride the same machinery.</b> A portal cookie is user-level — it has no device
+/// row — so it is validated against a per-user snapshot of the same three columns
+/// (<see cref="ResolveUserAsync"/>, cached under <see cref="UserCacheKey"/> for the same TTL), and gets its
+/// admin claim from the same <see cref="ApplyAdminClaim"/>. <see cref="EvictUserAsync"/> drops that key as
+/// well as the device keys, which is the one line that makes every revoking path end a portal session on
+/// its next request too. See <c>PortalSession</c>.
+/// </para>
 /// </summary>
 internal static class TokenRevocation
 {
@@ -137,7 +145,7 @@ internal static class TokenRevocation
     /// <see cref="JwtTokenService"/> remembering not to add the claim.
     /// </para>
     /// </summary>
-    private static void ApplyAdminClaim(ClaimsPrincipal principal, bool isAdmin)
+    internal static void ApplyAdminClaim(ClaimsPrincipal principal, bool isAdmin)
     {
         foreach (var identity in principal.Identities)
         {
@@ -156,9 +164,11 @@ internal static class TokenRevocation
     }
 
     /// <summary>
-    /// Drops every cached snapshot belonging to <paramref name="userId"/>, so a stamp bump takes effect
-    /// on the next request rather than after <c>Auth:StampCacheSeconds</c>. Call it <b>after</b> the new
-    /// stamp is committed — evicting first would just let the next request re-cache the old value.
+    /// Drops every cached snapshot belonging to <paramref name="userId"/> — one per device, plus the
+    /// per-user one portal sessions validate against — so a stamp bump, a suspension or a change of role
+    /// takes effect on the next request rather than after <c>Auth:StampCacheSeconds</c>. Call it
+    /// <b>after</b> the change is committed — evicting first would just let the next request re-cache the
+    /// old value.
     /// </summary>
     public static async Task EvictUserAsync(
         WorkLedgerDbContext db,
@@ -175,9 +185,46 @@ internal static class TokenRevocation
         {
             cache.Remove(CacheKey(deviceRowId));
         }
+
+        cache.Remove(UserCacheKey(userId));
     }
 
     public static string CacheKey(int deviceRowId) => $"device:{deviceRowId}";
+
+    /// <summary>The per-user snapshot's key. Distinct prefix, so a user id and a device row id never collide.</summary>
+    public static string UserCacheKey(int userId) => $"user:{userId}";
+
+    /// <summary>
+    /// <c>(SecurityStamp, IsAdmin, IsDisabled)</c> for <paramref name="userId"/>, or null when the row is
+    /// gone — the portal-session twin of the device lookup below, cached the same way and for the same
+    /// TTL, <b>misses included</b> (identity ids are never reused, so a cached "gone" cannot shadow a
+    /// real user).
+    /// </summary>
+    public static async Task<UserSnapshot?> ResolveUserAsync(
+        WorkLedgerDbContext db,
+        IMemoryCache cache,
+        AuthOptions auth,
+        int userId,
+        CancellationToken cancellationToken)
+    {
+        var key = UserCacheKey(userId);
+        if (auth.StampCacheSeconds > 0 && cache.TryGetValue(key, out UserSnapshot? cached))
+        {
+            return cached;
+        }
+
+        var snapshot = await db.Users
+            .Where(u => u.Id == userId)
+            .Select(u => new UserSnapshot(u.SecurityStamp, u.IsAdmin, u.DisabledAtUtc != null))
+            .SingleOrDefaultAsync(cancellationToken);
+
+        if (auth.StampCacheSeconds > 0)
+        {
+            cache.Set(key, snapshot, TimeSpan.FromSeconds(auth.StampCacheSeconds));
+        }
+
+        return snapshot;
+    }
 
     /// <summary>
     /// One projection of <c>(UserId, SecurityStamp)</c> per device row, cached for
@@ -236,4 +283,7 @@ internal static class TokenRevocation
     /// either one has to evict the key (see <see cref="EvictUserAsync"/>).
     /// </summary>
     private sealed record DeviceSnapshot(int UserId, string SecurityStamp, bool IsAdmin, bool IsDisabled);
+
+    /// <summary>What a portal session needs to know about its user on each request. See <see cref="ResolveUserAsync"/>.</summary>
+    internal sealed record UserSnapshot(string SecurityStamp, bool IsAdmin, bool IsDisabled);
 }

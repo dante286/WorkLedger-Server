@@ -80,12 +80,16 @@ public sealed class UserAccountsFixture : IAsyncLifetime
             builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(settings)));
     }
 
-    /// <summary>Empties every table, so each test starts from a database with zero users.</summary>
+    /// <summary>
+    /// Empties every table, so each test starts from a database with zero users — and with no Data
+    /// Protection keys, so a portal test that asserts on the shared key ring cannot pass on a key some
+    /// earlier test left behind.
+    /// </summary>
     public async Task ResetAsync()
     {
         using var db = CreateDbContext();
         await db.Database.ExecuteSqlRawAsync(
-            @"TRUNCATE ""TimeEntries"", ""TaskItems"", ""Projects"", ""Devices"", ""Invites"", ""PasswordResets"", ""Users"" RESTART IDENTITY CASCADE;");
+            @"TRUNCATE ""TimeEntries"", ""TaskItems"", ""Projects"", ""Devices"", ""Invites"", ""PasswordResets"", ""Users"", ""DataProtectionKeys"" RESTART IDENTITY CASCADE;");
     }
 }
 

@@ -66,7 +66,7 @@ namespace WorkLedger.Server.Auth;
 /// verify a password and forget to reset the budget it spent.
 /// </para>
 /// </summary>
-internal sealed class CredentialCheck(WorkLedgerDbContext db, AuthOptions auth, PasswordService passwords)
+public sealed class CredentialCheck(WorkLedgerDbContext db, AuthOptions auth, PasswordService passwords)
 {
     public async Task<CredentialCheckResult> CheckAsync(
         string? email, string? password, CancellationToken cancellationToken)
@@ -145,7 +145,7 @@ internal sealed class CredentialCheck(WorkLedgerDbContext db, AuthOptions auth, 
 }
 
 /// <summary>What <see cref="CredentialCheck"/> concluded. See it for why there is only one kind of failure.</summary>
-internal abstract record CredentialCheckResult
+public abstract record CredentialCheckResult
 {
     /// <summary>The password is right. <see cref="User"/> is tracked, with the success writes already saved.</summary>
     public sealed record Verified(User User) : CredentialCheckResult;

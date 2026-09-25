@@ -61,7 +61,12 @@ public sealed class User
     /// </summary>
     public DateTime? LockoutEndUtc { get; set; }
 
-    /// <summary>Last successful login. Informational — nothing keys off it.</summary>
+    /// <summary>
+    /// Last successful sign-in, of either kind: a device's <c>POST /auth/login</c> or a browser's portal
+    /// sign-in (S11). Both go through <c>CredentialCheck</c>, which is what writes this. It is a user-level
+    /// fact about the person signing in, not about any one device, so the portal's lack of a device row
+    /// does not exempt it. Informational — nothing keys off it; the admin user list shows it.
+    /// </summary>
     public DateTime? LastLoginUtc { get; set; }
 
     /// <summary>Was <c>Account.Name</c>. Optional and free-form — nothing keys off it.</summary>

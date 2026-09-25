@@ -67,7 +67,8 @@ internal sealed class AccountDeletion(WorkLedgerDbContext db, IMemoryCache cache
         var transaction = db.Database.CurrentTransaction!;
 
         // Read before the delete, not after: TokenRevocation.EvictUserAsync finds the keys to drop by
-        // querying Devices, and by the time this commits there is no row left to find.
+        // querying Devices, and by the time this commits there is no row left to find. So this evicts by
+        // hand below — the device keys and the per-user key, the same set EvictUserAsync would drop.
         var deviceRowIds = await db.Devices
             .Where(d => d.UserId == userId)
             .Select(d => d.Id)
@@ -91,6 +92,8 @@ internal sealed class AccountDeletion(WorkLedgerDbContext db, IMemoryCache cache
         {
             cache.Remove(TokenRevocation.CacheKey(deviceRowId));
         }
+
+        cache.Remove(TokenRevocation.UserCacheKey(userId));
 
         if (actorUserId is { } actor)
         {
