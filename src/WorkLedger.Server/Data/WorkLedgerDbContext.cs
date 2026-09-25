@@ -1,9 +1,11 @@
+using Microsoft.AspNetCore.DataProtection.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using WorkLedger.Server.Data.Entities;
 
 namespace WorkLedger.Server.Data;
 
-public sealed class WorkLedgerDbContext(DbContextOptions<WorkLedgerDbContext> options) : DbContext(options)
+public sealed class WorkLedgerDbContext(DbContextOptions<WorkLedgerDbContext> options)
+    : DbContext(options), IDataProtectionKeyContext
 {
     public DbSet<User> Users => Set<User>();
     public DbSet<Device> Devices => Set<Device>();
@@ -12,6 +14,21 @@ public sealed class WorkLedgerDbContext(DbContextOptions<WorkLedgerDbContext> op
     public DbSet<Project> Projects => Set<Project>();
     public DbSet<TaskItem> TaskItems => Set<TaskItem>();
     public DbSet<TimeEntry> TimeEntries => Set<TimeEntry>();
+
+    /// <summary>
+    /// The ASP.NET Data Protection key ring (S11), which encrypts the portal's session cookie and its
+    /// antiforgery tokens. Kept here rather than in the container's filesystem so an image upgrade or a
+    /// restart does not sign every portal user out, and so a second replica can read the first one's
+    /// cookies. Read and written only when <c>Web:Enabled</c> is on — see <c>PortalSetup</c>.
+    /// <para>
+    /// <b>The keys are stored unencrypted, and that is a considered choice.</b> Anyone who can read this
+    /// table can already read <c>Users</c> — every password hash, security stamp and admin flag — and can
+    /// write to it too, so an at-rest key-encryption key would protect cookies from an attacker who
+    /// already owns what the cookies grant. The framework logs a warning about it at startup; that
+    /// warning is expected.
+    /// </para>
+    /// </summary>
+    public DbSet<DataProtectionKey> DataProtectionKeys => Set<DataProtectionKey>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

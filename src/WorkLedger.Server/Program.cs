@@ -13,6 +13,7 @@ using WorkLedger.Server.Auth;
 using WorkLedger.Server.Data;
 using WorkLedger.Server.Reports;
 using WorkLedger.Server.Sync;
+using WorkLedger.Server.Web;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -86,8 +87,16 @@ builder.Services.AddScoped<InviteService>();
 builder.Services.AddScoped<PasswordResetService>();
 builder.Services.AddScoped<RegistrationService>();
 
+// The web portal (S11): Razor Pages under /portal behind Web:Enabled, default off. Registered either way
+// and inert until mapped below — see PortalSetup for why the gate is on the pipeline, not here.
+builder.Services.AddPortal();
+
+// JwtBearer stays the DEFAULT scheme, so the fallback and admin policies — and with them every JSON
+// route — authenticate by bearer token only. The portal's cookie scheme sits beside it and is consulted
+// only by the portal's own policies below; see PortalSession for why the two are never merged.
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer();
+    .AddJwtBearer()
+    .AddCookie(PortalSession.Scheme);
 
 builder.Services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme)
     .Configure<JwtOptions>((options, jwtOptions) =>
@@ -162,6 +171,14 @@ builder.Services.AddRateLimiter(options =>
 
     options.AddPolicy(AuthEndpoints.RateLimitPolicy, httpContext =>
     {
+        // A GET takes no credential, so it never spends a permit. Every JSON route under this policy is a
+        // POST, so this changes nothing there; it exists for the portal, whose policy attaches to a whole
+        // Razor page, and whose GET only renders the form the POST then submits.
+        if (HttpMethods.IsGet(httpContext.Request.Method) || HttpMethods.IsHead(httpContext.Request.Method))
+        {
+            return RateLimitPartition.GetNoLimiter("reads");
+        }
+
         var auth = httpContext.RequestServices.GetRequiredService<AuthOptions>();
         if (auth.LoginRateLimitPerMinute <= 0)
         {
@@ -188,8 +205,19 @@ builder.Services.AddRateLimiter(options =>
             ? (int)Math.Ceiling(retryAfter.TotalSeconds)
             : (int)Math.Ceiling(context.HttpContext.RequestServices
                 .GetRequiredService<AuthOptions>().LoginRateLimitWindow.TotalSeconds);
-        context.HttpContext.Response.Headers.RetryAfter =
-            Math.Max(1, seconds).ToString(CultureInfo.InvariantCulture);
+        seconds = Math.Max(1, seconds);
+        context.HttpContext.Response.Headers.RetryAfter = seconds.ToString(CultureInfo.InvariantCulture);
+
+        // A browser shows a bare 429 as a blank page, so the portal gets a sentence. The JSON API's 429
+        // stays bodiless, as it always has been: a client reads Retry-After.
+        if (context.HttpContext.Request.Path.StartsWithSegments(WebOptions.PortalPath))
+        {
+            context.HttpContext.Response.ContentType = "text/plain; charset=utf-8";
+            return new ValueTask(context.HttpContext.Response.WriteAsync(
+                $"Too many sign-in attempts from this address. Try again in {seconds} seconds.",
+                context.HttpContext.RequestAborted));
+        }
+
         return ValueTask.CompletedTask;
     };
 });
@@ -208,6 +236,18 @@ builder.Services.AddAuthorization(options =>
     options.AddPolicy(TokenRevocation.AdminPolicy, policy => policy
         .RequireAuthenticatedUser()
         .RequireClaim(TokenRevocation.AdminClaim, "true"));
+
+    // The portal's two policies (S11). Each names the cookie scheme explicitly, which is what makes it
+    // authenticate by cookie ONLY: a bearer token presented to a portal page is not consulted, and the
+    // page redirects to sign-in. The admin claim is the same one, put there from the same column — see
+    // PortalSession.ValidatePrincipalAsync.
+    options.AddPolicy(PortalSession.UserPolicy, policy => policy
+        .AddAuthenticationSchemes(PortalSession.Scheme)
+        .RequireAuthenticatedUser());
+    options.AddPolicy(PortalSession.AdminPolicy, policy => policy
+        .AddAuthenticationSchemes(PortalSession.Scheme)
+        .RequireAuthenticatedUser()
+        .RequireClaim(TokenRevocation.AdminClaim, "true"));
 });
 
 var app = builder.Build();
@@ -223,6 +263,7 @@ using (var validationScope = app.Services.CreateScope())
     validationScope.ServiceProvider.GetRequiredService<PostgresConnection>();
     validationScope.ServiceProvider.GetRequiredService<AuthOptions>();
     validationScope.ServiceProvider.GetRequiredService<TrustedProxies>();
+    validationScope.ServiceProvider.GetRequiredService<WebOptions>();
 }
 
 // Migrate only. Nothing is seeded: from S6 a fresh database starts with zero users and the first
@@ -252,14 +293,25 @@ app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup").LogInf
     trustedProxies.Describe());
 
 // Method, path and status only. Request.Path excludes the query string and no header is logged, which
-// is what keeps bearer tokens and the X-Bootstrap-Secret out of the log — every secret this API accepts
-// arrives in a header, so widening this line to headers or full URLs would start recording them.
+// is what keeps bearer tokens and the X-Bootstrap-Secret out of the log — every secret the JSON API
+// accepts arrives in a header, so widening this line to headers or full URLs would start recording them.
+// The portal (S11) adds the first secrets that arrive some other way — invite and reset tokens — and
+// they travel only in a URL fragment (never sent to the server) or a POST body. NO TOKEN MAY EVER BE A
+// PATH SEGMENT: this line would log it.
 app.Use(async (context, next) =>
 {
     var logger = context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("RequestLog");
     await next();
     logger.LogInformation("{Method} {Path} -> {StatusCode}", context.Request.Method, context.Request.Path, context.Response.StatusCode);
 });
+
+// Portal responses only, and only when the portal is on. Registered before authentication so the
+// sign-in redirects a challenge produces carry the headers too.
+var web = app.Services.GetRequiredService<WebOptions>();
+if (web.Enabled)
+{
+    app.UsePortalHeaders();
+}
 
 // No CORS policy, deliberately. The only client is the Avalonia desktop app, which calls over
 // HttpClient and is not a browser origin, so CORS would never be consulted; a permissive policy added
@@ -276,7 +328,14 @@ var version = Assembly.GetExecutingAssembly()
     .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
     ?? "0.0.0-dev";
 
-app.MapGet("/", () => Results.Ok(new { name = "WorkLedger.Server", version })).AllowAnonymous();
+// With the portal on, a browser landing on the bare origin is sent to it; anything else — the client, a
+// health probe, curl — gets the same JSON as ever. With the portal off this is exactly the S10 route.
+// The redirect is host-relative, so it never repeats the caller's Host header back to them.
+app.MapGet("/", (HttpRequest request) =>
+        web.Enabled && AcceptsHtml(request)
+            ? Results.Redirect(WebOptions.PortalPath)
+            : Results.Ok(new { name = "WorkLedger.Server", version }))
+    .AllowAnonymous();
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok", utc = DateTime.UtcNow })).AllowAnonymous();
 
@@ -284,6 +343,17 @@ app.MapAuthEndpoints();
 app.MapSyncEndpoints();
 app.MapReportEndpoints();
 
+if (web.Enabled)
+{
+    app.MapPortal();
+}
+
 app.Run();
+
+// A browser navigating asks for text/html explicitly; `*/*` alone is what non-browser clients send, and
+// it stays JSON — the same reading /reports gives Accept.
+static bool AcceptsHtml(HttpRequest request) =>
+    request.GetTypedHeaders().Accept.Any(accept =>
+        accept.MediaType.Equals("text/html", StringComparison.OrdinalIgnoreCase));
 
 public partial class Program;

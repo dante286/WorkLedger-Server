@@ -4,13 +4,20 @@
     <ProjectReference Include="..\WorkLedger.Contracts\WorkLedger.Contracts.csproj" />
   </ItemGroup>
 
+  <!-- EF Core moves in lockstep with the ASP.NET packages. DataProtection.EntityFrameworkCore (S11's
+       persisted key ring) requires EF Core >= its own version, and its 10.0.4 build pulls a
+       System.Security.Cryptography.Xml flagged NU1903 - so everything is on 10.0.10 rather than that one
+       left behind. Relational is referenced directly only so Npgsql's older minimum cannot pull a second
+       copy into the test project (MSB3277); drop it once Npgsql's own dependency catches up. -->
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.10" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.4" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.4">
+    <PackageReference Include="Microsoft.AspNetCore.DataProtection.EntityFrameworkCore" Version="10.0.10" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.10" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.10">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.10" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
   </ItemGroup>
 

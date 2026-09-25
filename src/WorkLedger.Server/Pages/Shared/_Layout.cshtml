@@ -1,0 +1,39 @@
+@using WorkLedger.Server.Auth
+@{
+    // On every portal page the user here is the portal session or nobody — the portal policies replace
+    // whatever the bearer scheme authenticated (see PortalSession), so a token never shows up as signed in.
+    var signedIn = User.Identity?.IsAuthenticated == true;
+    var isAdmin = User.HasClaim(TokenRevocation.AdminClaim, "true");
+}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="no-referrer">
+    <title>@ViewData["Title"] · WorkLedger</title>
+    <link rel="stylesheet" href="/portal/assets/portal.css">
+    <script src="/portal/assets/portal.js" defer></script>
+</head>
+<body>
+    <header class="masthead">
+        <a class="brand" href="/portal">WorkLedger</a>
+        @if (signedIn)
+        {
+            <nav class="nav">
+                <a href="/portal">Account</a>
+                @if (isAdmin)
+                {
+                    <a href="/portal/admin">Administration</a>
+                }
+                <form method="post" asp-page="/Portal/Logout" class="inline">
+                    <button type="submit" class="link">Sign out</button>
+                </form>
+            </nav>
+        }
+    </header>
+    <main class="content">
+        @RenderBody()
+    </main>
+</body>
+</html>

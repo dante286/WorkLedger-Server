@@ -1,0 +1,19 @@
+@page
+@model WorkLedger.Server.Pages.Portal.IndexModel
+@{
+    ViewData["Title"] = "Your account";
+}
+<section class="card">
+    <h1>Your account</h1>
+    <dl class="facts">
+        <dt>Email</dt>
+        <dd>@Model.Email</dd>
+        @if (Model.DisplayName is not null)
+        {
+            <dt>Name</dt>
+            <dd>@Model.DisplayName</dd>
+        }
+        <dt>Member since</dt>
+        <dd>@PortalFormat.Time(Model.CreatedAt)</dd>
+    </dl>
+</section>
