@@ -44,6 +44,7 @@ internal static class PortalSetup
     public static void AddPortal(this IServiceCollection services)
     {
         services.AddSingleton(sp => WebOptions.Resolve(sp.GetRequiredService<IConfiguration>()));
+        services.AddSingleton<PortalLinks>();
 
         services.AddRazorPages(options =>
         {

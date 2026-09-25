@@ -16,7 +16,7 @@ namespace WorkLedger.Server.Auth;
 /// produce it again — an operator who loses one revokes it and issues another.
 /// </para>
 /// </summary>
-internal sealed class InviteService(WorkLedgerDbContext db, AuthOptions auth, ILoggerFactory loggerFactory)
+public sealed class InviteService(WorkLedgerDbContext db, AuthOptions auth, ILoggerFactory loggerFactory)
 {
     /// <summary>
     /// Mints an invite, optionally bound to <paramref name="email"/>, living <paramref name="expiresInDays"/>
@@ -156,7 +156,7 @@ internal sealed class InviteService(WorkLedgerDbContext db, AuthOptions auth, IL
 }
 
 /// <summary>What <see cref="InviteService.IssueAsync"/> did.</summary>
-internal abstract record InviteIssue
+public abstract record InviteIssue
 {
     /// <summary>Minted. <see cref="Token"/> is the only copy there will ever be.</summary>
     public sealed record Issued(string Token, InviteSummary Invite) : InviteIssue;
@@ -174,7 +174,7 @@ internal abstract record InviteIssue
     }
 }
 
-internal enum InviteRevocation
+public enum InviteRevocation
 {
     Revoked,
     NotFound,

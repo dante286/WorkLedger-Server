@@ -27,7 +27,7 @@ namespace WorkLedger.Server.Auth;
 /// app you just changed it in, which reads as a bug.
 /// </para>
 /// </summary>
-internal sealed class AccountSelfService(
+public sealed class AccountSelfService(
     WorkLedgerDbContext db,
     AuthOptions auth,
     PasswordService passwords,
@@ -252,9 +252,9 @@ internal sealed class AccountSelfService(
 /// <see cref="SelfServiceOutcome.Done"/> from the stamp-bumping methods, carrying the new stamp;
 /// <see cref="Error"/> on <see cref="SelfServiceOutcome.InvalidPassword"/>.
 /// </summary>
-internal sealed record SelfServiceResult(SelfServiceOutcome Outcome, User? User = null, string? Error = null);
+public sealed record SelfServiceResult(SelfServiceOutcome Outcome, User? User = null, string? Error = null);
 
-internal enum SelfServiceOutcome
+public enum SelfServiceOutcome
 {
     Done,
 

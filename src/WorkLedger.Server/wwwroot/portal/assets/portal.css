@@ -79,6 +79,7 @@ label { display: block; margin: 1rem 0 0.25rem; font-weight: 600; }
 
 input[type="email"],
 input[type="password"],
+input[type="number"],
 input[type="text"] {
   width: 100%;
   padding: 0.5rem 0.625rem;
@@ -121,3 +122,78 @@ form.inline { display: inline; margin: 0; }
 .facts { display: grid; grid-template-columns: max-content 1fr; gap: 0.5rem 1.5rem; margin: 0; }
 .facts dt { color: var(--muted); }
 .facts dd { margin: 0; }
+
+h2 { font-size: 1.125rem; margin: 0 0 0.75rem; }
+
+.content > h2 { margin-top: 2rem; }
+
+.card + .card, .card + h2, .notice + .card, .alert + .card { margin-top: 1.25rem; }
+
+.notice {
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+}
+
+.tabs { display: flex; gap: 1.25rem; margin-bottom: 1.5rem; border-bottom: 1px solid var(--border); }
+.tab { padding: 0.5rem 0; color: var(--muted); text-decoration: none; }
+.tab.current { color: var(--text); border-bottom: 2px solid var(--accent); font-weight: 600; }
+
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 1rem; }
+.link-card { color: inherit; text-decoration: none; }
+.link-card:hover { border-color: var(--accent); }
+
+.table-scroll { overflow-x: auto; margin-top: 1.25rem; }
+
+table.grid { width: 100%; border-collapse: collapse; background: var(--surface); }
+table.grid th, table.grid td {
+  padding: 0.625rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+table.grid th { color: var(--muted); font-weight: 600; font-size: 0.875rem; }
+
+td.actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: flex-start; }
+
+.badge {
+  display: inline-block;
+  margin-right: 0.25rem;
+  padding: 0 0.5rem;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 0.8125rem;
+}
+.badge.warn { border-color: var(--alert-text); color: var(--alert-text); }
+.badge.quiet { border-color: var(--border); color: var(--muted); }
+
+button.secondary {
+  padding: 0.25rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+button.danger {
+  margin-top: 0.5rem;
+  padding: 0.375rem 0.875rem;
+  border: 0;
+  border-radius: 6px;
+  background: var(--alert-text);
+  color: var(--surface);
+  font-weight: 600;
+}
+
+details.danger-zone summary { cursor: pointer; color: var(--alert-text); }
+details.danger-zone form { margin-top: 0.5rem; max-width: 22rem; }
+
+.card.secret { border-color: var(--accent); }
+
+.copy-row { display: flex; gap: 0.5rem; align-items: center; }
+.copy-row input { flex: 1; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.875rem; }
+
+form.stacked { max-width: 26rem; }
+
+table.grid time { white-space: nowrap; }

@@ -22,7 +22,7 @@ namespace WorkLedger.Server.Auth;
 /// plus a device; registering is a user-level act with no device to bind one to.
 /// </para>
 /// </summary>
-internal sealed class RegistrationService(
+public sealed class RegistrationService(
     WorkLedgerDbContext db,
     AuthOptions auth,
     BootstrapOptions bootstrap,
@@ -225,7 +225,7 @@ internal sealed class RegistrationService(
 }
 
 /// <summary>What <see cref="RegistrationService"/> did.</summary>
-internal abstract record RegistrationResult
+public abstract record RegistrationResult
 {
     /// <summary>The account was created (register) or credentialed (claim).</summary>
     public sealed record Succeeded(User User) : RegistrationResult;
@@ -237,7 +237,7 @@ internal abstract record RegistrationResult
     public sealed record Refused(RegistrationRefusal Reason) : RegistrationResult;
 }
 
-internal enum RegistrationRefusal
+public enum RegistrationRefusal
 {
     /// <summary><c>Auth:RegistrationEnabled</c> is off.</summary>
     Disabled,

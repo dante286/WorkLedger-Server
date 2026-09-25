@@ -2,7 +2,16 @@
 @{
     ViewData["Title"] = "Administration";
 }
-<section class="card">
-    <h1>Administration</h1>
-    <p>You are signed in as an administrator of this server.</p>
-</section>
+<partial name="_AdminNav" />
+
+<h1>Administration</h1>
+<div class="cards">
+    <a class="card link-card" href="/portal/admin/users">
+        <h2>Users</h2>
+        <p class="muted">Everyone with an account on this server. Unlock, suspend, change roles, issue password reset links, delete.</p>
+    </a>
+    <a class="card link-card" href="/portal/admin/invites">
+        <h2>Invites</h2>
+        <p class="muted">Links that let one person create an account, without sharing the server's signup secret.</p>
+    </a>
+</div>

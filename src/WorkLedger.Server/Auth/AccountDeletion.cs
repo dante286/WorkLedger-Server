@@ -51,7 +51,7 @@ namespace WorkLedger.Server.Auth;
 /// alongside that category's other audit lines.
 /// </para>
 /// </summary>
-internal sealed class AccountDeletion(WorkLedgerDbContext db, IMemoryCache cache, ILoggerFactory loggerFactory)
+public sealed class AccountDeletion(WorkLedgerDbContext db, IMemoryCache cache, ILoggerFactory loggerFactory)
 {
     /// <summary>
     /// Deletes <paramref name="userId"/> and every row it owns. <paramref name="actorUserId"/> is the

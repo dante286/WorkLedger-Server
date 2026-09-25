@@ -19,7 +19,7 @@ namespace WorkLedger.Server.Auth;
 /// Self-service "forgot my password" is the follow-up that needs mail.
 /// </para>
 /// </summary>
-internal sealed class PasswordResetService(
+public sealed class PasswordResetService(
     WorkLedgerDbContext db,
     AuthOptions auth,
     PasswordService passwords,
@@ -155,10 +155,10 @@ internal sealed class PasswordResetService(
 }
 
 /// <summary>A freshly minted reset: the raw token, returned exactly once, and when it stops working.</summary>
-internal sealed record IssuedPasswordReset(string Token, DateTime ExpiresAtUtc);
+public sealed record IssuedPasswordReset(string Token, DateTime ExpiresAtUtc);
 
 /// <summary>What <see cref="PasswordResetService.RedeemAsync"/> did.</summary>
-internal abstract record PasswordResetRedemption
+public abstract record PasswordResetRedemption
 {
     public sealed record Redeemed : PasswordResetRedemption
     {

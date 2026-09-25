@@ -1,0 +1,116 @@
+@page
+@model WorkLedger.Server.Pages.Portal.Admin.UsersModel
+@{
+    ViewData["Title"] = "Users";
+}
+<partial name="_AdminNav" />
+
+<h1>Users</h1>
+
+@if (Model.Message is not null)
+{
+    <p class="notice" role="status">@Model.Message</p>
+}
+@if (Model.Error is not null)
+{
+    <p class="alert" role="alert">@Model.Error</p>
+}
+
+@if (Model.ResetLink is not null)
+{
+    <section class="card secret" aria-labelledby="reset-heading">
+        <h2 id="reset-heading">Password reset link for @Model.ResetFor</h2>
+        <p>
+            <strong>This link is shown once.</strong> It is not stored anywhere it could be shown again —
+            copy it now and send it to @Model.ResetFor yourself. No email is sent.
+        </p>
+        <div class="copy-row">
+            <input id="reset-link" type="text" readonly value="@Model.ResetLink" aria-label="Password reset link">
+            <button type="button" class="secondary" data-copy="reset-link" hidden>Copy</button>
+        </div>
+        <p class="muted">
+            It works once, and expires @PortalFormat.Time(Model.ResetExpiresAtUtc)
+            (@Model.ResetExpiryHours hours). Any reset link issued to this user before it no longer works.
+            Using it signs them out of every device.
+        </p>
+    </section>
+}
+
+<div class="table-scroll">
+    <table class="grid">
+        <thead>
+            <tr>
+                <th scope="col">User</th>
+                <th scope="col">Status</th>
+                <th scope="col">Devices</th>
+                <th scope="col">Last sign-in</th>
+                <th scope="col">Joined</th>
+                <th scope="col">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var user in Model.Users)
+            {
+                var isSelf = user.Id == Model.CurrentUserId;
+                var label = string.IsNullOrEmpty(user.Email) ? $"user #{user.Id}" : user.Email;
+                <tr>
+                    <td>
+                        <div>@label @if (isSelf) { <span class="muted">(you)</span> }</div>
+                        @if (user.DisplayName is not null)
+                        {
+                            <div class="muted">@user.DisplayName</div>
+                        }
+                    </td>
+                    <td>
+                        @if (user.IsAdmin) { <span class="badge">Admin</span> }
+                        @if (user.IsDisabled) { <span class="badge warn">Suspended</span> }
+                        @if (user.IsLocked) { <span class="badge warn">Locked out</span> }
+                        @if (!user.IsDisabled && !user.IsLocked) { <span class="badge quiet">Active</span> }
+                    </td>
+                    <td>@user.DeviceCount</td>
+                    <td>@(user.LastLoginUtc is { } last ? PortalFormat.Time(last) : "Never")</td>
+                    <td>@PortalFormat.Time(user.CreatedAtUtc)</td>
+                    <td class="actions">
+                        @if (user.IsLocked)
+                        {
+                            <form method="post" asp-page-handler="Unlock" class="inline">
+                                <input type="hidden" name="userId" value="@user.Id">
+                                <button type="submit" class="secondary">Unlock</button>
+                            </form>
+                        }
+                        @if (!isSelf)
+                        {
+                            <form method="post" asp-page-handler="@(user.IsDisabled ? "Enable" : "Disable")" class="inline">
+                                <input type="hidden" name="userId" value="@user.Id">
+                                <button type="submit" class="secondary">@(user.IsDisabled ? "Restore" : "Suspend")</button>
+                            </form>
+                        }
+                        <form method="post" asp-page-handler="@(user.IsAdmin ? "Demote" : "Promote")" class="inline">
+                            <input type="hidden" name="userId" value="@user.Id">
+                            <button type="submit" class="secondary">@(user.IsAdmin ? (isSelf ? "Step down as admin" : "Remove admin") : "Make admin")</button>
+                        </form>
+                        <form method="post" asp-page-handler="Reset" class="inline">
+                            <input type="hidden" name="userId" value="@user.Id">
+                            <button type="submit" class="secondary">Password reset link</button>
+                        </form>
+                        @if (!isSelf)
+                        {
+                            <details class="danger-zone">
+                                <summary>Delete…</summary>
+                                <form method="post" asp-page-handler="Delete">
+                                    <input type="hidden" name="userId" value="@user.Id">
+                                    <p>
+                                        Deletes this account and every project, task and time entry it has synced.
+                                        This cannot be undone. Type <strong>@label</strong> to confirm.
+                                    </p>
+                                    <input type="text" name="confirmEmail" autocomplete="off" aria-label="Type the account's email to confirm">
+                                    <button type="submit" class="danger">Delete account</button>
+                                </form>
+                            </details>
+                        }
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>
