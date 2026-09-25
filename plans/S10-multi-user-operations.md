@@ -367,6 +367,8 @@ already made once.
 - **Retiring `/auth/claim` and `UnclaimedUser`** — see item 3.
 - **An admin UI, and any client change.** Item 17 hands the client an inventory; the client repo is edited as
   client-repo work.
+  > **Follow-up, 2026-09-25:** the admin UI is now [S11](S11-web-portal.md) — a server-rendered web portal
+  > for admins *and* regular users, which also takes account management off the client.
 - **Audit log table.** Item 10 logs to the request log. A queryable audit trail is a real feature and a
   separate one.
 

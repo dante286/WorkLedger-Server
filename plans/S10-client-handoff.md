@@ -5,6 +5,12 @@
 **Client tickets:** none filed yet — see [What the client actually has to do](#what-the-client-actually-has-to-do),
 which is deliberately short.
 
+> **Superseded for the client, 2026-09-25.** The client never re-vendored at `1e343c8`, and its plan 12 was
+> rewritten for the web-portal direction ([S11](S11-web-portal.md)). It will re-vendor **once, at S11's pin**,
+> from `S11-client-handoff.md`, which covers S10's two trailing fields as well. S11 also moves `AdminDtos.cs`
+> and `ResetPasswordRequest` out of `WorkLedger.Contracts`, so the vendor-or-decline choice in Step 0 below no
+> longer arises. The inventory and the sync audit here remain the record of what S10 changed.
+
 **Pin to record when re-vendoring:** **`1e343c8`** — the last commit to touch
 `src/WorkLedger.Contracts/`. Server `main` has moved past it (docs and the rate limiter changed no
 contract file), so pin the Contracts commit rather than `main`, exactly as S9 did.

@@ -29,8 +29,10 @@ only at `WorkLedger.Contracts` (see S0).
 | S8 | [S8-account-deletion-and-device-management.md](S8-account-deletion-and-device-management.md) | WL-108 (WL-121/122/123/124/125) (done) | S7 |
 | S9 | [S9-user-accounts-cutover.md](S9-user-accounts-cutover.md) | WL-109 (WL-126…WL-132) (done) | S6, S7, S8 |
 | — | [S9-client-handoff.md](S9-client-handoff.md) | WL-131 → client epic WL-105 | S9 |
-| S10 | [S10-multi-user-operations.md](S10-multi-user-operations.md) | WL-150 (WL-151…WL-155, subtasks WL-156…WL-172) | S9 |
-| — | [S10-client-handoff.md](S10-client-handoff.md) | WL-172 | S10 |
+| S10 | [S10-multi-user-operations.md](S10-multi-user-operations.md) | WL-150 (WL-151…WL-155, subtasks WL-156…WL-172) (done) | S9 |
+| — | [S10-client-handoff.md](S10-client-handoff.md) | WL-172 (step 0 superseded by S11's handoff) | S10 |
+| S11 | [S11-web-portal.md](S11-web-portal.md) | WL-179 (WL-180…WL-185, subtasks WL-186…WL-208) | S10 |
+| — | `S11-client-handoff.md` (written by S11 group F) | WL-208 → client plan 12 (WL-173) | S11 |
 
 **S6–S9 are one release: user accounts.** S2 built auth for a single seeded account with devices enrolled by a
 shared secret, and named per-user accounts as the deferred follow-up. S6–S9 are that follow-up — a **user
@@ -88,6 +90,22 @@ client's build stays green across the re-vendor with no source change at all. Se
 than asserting it. The same document records the audit that `Sync/`, `Payloads/` and `Reports/` are
 **byte-identical** to the commit the client is pinned at.
 
+**S11 is the web portal, and it changes who owns accounts.** Decided 2026-09-25: the desktop client is
+reduced to time tracking plus signing in, and **every account operation moves to the server** — registration,
+claim, password change and reset, device management, sign-out-everywhere, account deletion, and the whole
+operator surface — through Razor Pages served by this process under `/portal`, for regular users and admins
+alike. The client stays fully usable with no server; the server, with its portal, stays fully usable with no
+client. The one architectural decision is a **user-level cookie scheme beside the device-level JWT one**,
+validated against the same user row and never accepted by the JSON API (see S11's Context for the options
+weighed). The portal is **off by default** (`Web:Enabled`), so an upgraded deployment behaves exactly as S10
+until the operator turns it on. The S6–S8 JSON account routes stay as documented **compatibility routes** for
+v0.1.x clients; no new behaviour lands on them. The client half is the rewritten client plan 12
+(`12-account-lifecycle-to-web-portal.md`, epic WL-173), which replaced the original S10 follow-on (invite
+and reset UI in the desktop app) before it was started.
+
+> **Build order for S11 is A → B → D → E → C → F**, not the lettering — see its Sequencing section. Group A
+> is a pure refactor (no test modified) and lands alone.
+
 ## Cross-repo contract handoff (important)
 
 `WorkLedger.Contracts` is authored in **this** repo (S0). The client **consumes it today**: client Plan 6
@@ -105,7 +123,11 @@ it produces is [S9-client-handoff.md](S9-client-handoff.md) — the settled inve
 removed and changed, plus the list of client files that break. The re-vendor itself is client-repo work
 (WL-133), and it blocks the rest of client epic WL-105. **S10 then did the same thing again, cheaply:**
 four scope groups changed the contract, and [S10-client-handoff.md](S10-client-handoff.md) is the single
-pass at the end of them. Publishing the package (S0 sketched the GitHub Packages step) is the follow-up
+pass at the end of them. **From S11 the library has a scope rule: `WorkLedger.Contracts` holds what the desktop client speaks,
+and nothing else.** Shapes used only by server-side surfaces — the `/admin/*` JSON API, the portal — live in
+`WorkLedger.Server`. S11 applies it by moving `AdminDtos.cs` and `ResetPasswordRequest` out, which breaks no
+one because the client's pin (`3d27c86`) predates both; records the client *has* vendored stay until the next
+deliberate wire-breaking release, even where the client stops calling them. Publishing the package (S0 sketched the GitHub Packages step) is the follow-up
 that would remove this whole class of problem. Do **not** modify the client repo as part of these server
 plans — read it, coordinate, and land client edits as client-repo work.
 
