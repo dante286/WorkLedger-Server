@@ -30,7 +30,7 @@ namespace WorkLedger.Server.Auth;
 /// against a caller widening their scope, and an admin's scope is already every user.
 /// </para>
 /// </summary>
-internal sealed class AdminOperations(
+public sealed class AdminOperations(
     WorkLedgerDbContext db,
     BootstrapOptions bootstrap,
     IMemoryCache cache,
@@ -464,7 +464,7 @@ internal sealed class AdminOperations(
 }
 
 /// <summary>What an <see cref="AdminOperations"/> method did, or which rule stopped it.</summary>
-internal enum AdminOutcome
+public enum AdminOutcome
 {
     /// <summary>Done — including a no-op, where the target was already in the requested state.</summary>
     Done,

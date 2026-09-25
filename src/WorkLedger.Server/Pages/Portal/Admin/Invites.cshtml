@@ -1,0 +1,111 @@
+@page
+@model WorkLedger.Server.Pages.Portal.Admin.InvitesModel
+@{
+    ViewData["Title"] = "Invites";
+    string Who(int? id) => id is { } value
+        ? (Model.Emails.TryGetValue(value, out var email) ? email : "a deleted account")
+        : "—";
+}
+<partial name="_AdminNav" />
+
+<h1>Invites</h1>
+<p class="muted">
+    An invite lets one person create an account on this server without knowing its signup secret.
+    No email is sent — you pass the link on yourself.
+</p>
+
+@if (Model.Message is not null)
+{
+    <p class="notice" role="status">@Model.Message</p>
+}
+@if (Model.Error is not null)
+{
+    <p class="alert" role="alert">@Model.Error</p>
+}
+
+@if (Model.CreatedLink is not null)
+{
+    <section class="card secret" aria-labelledby="invite-heading">
+        <h2 id="invite-heading">Invite link@(Model.Created?.Email is { } bound ? $" for {bound.ToLowerInvariant()}" : "")</h2>
+        <p>
+            <strong>This link is shown once.</strong> Only a fingerprint of it is stored, so it cannot be
+            shown again — copy it now. If it goes astray, revoke it below and create another.
+        </p>
+        <div class="copy-row">
+            <input id="invite-link" type="text" readonly value="@Model.CreatedLink" aria-label="Invite link">
+            <button type="button" class="secondary" data-copy="invite-link" hidden>Copy</button>
+        </div>
+        <p class="muted">
+            It creates one account, then stops working. It expires @PortalFormat.Time(Model.Created!.ExpiresAtUtc).
+        </p>
+    </section>
+}
+
+<section class="card">
+    <h2>Create an invite</h2>
+    <form method="post" asp-page-handler="Create" class="stacked">
+        <label for="invite-email">Only for this email <span class="muted">(optional)</span></label>
+        <input id="invite-email" name="email" type="email" autocomplete="off">
+        <label for="invite-days">Expires in (days)</label>
+        <input id="invite-days" name="expiresInDays" type="number" min="1" value="@Model.DefaultExpiryDays">
+        <label for="invite-note">Note to yourself <span class="muted">(optional)</span></label>
+        <input id="invite-note" name="note" type="text" maxlength="200" autocomplete="off">
+        <button type="submit" class="primary">Create invite link</button>
+    </form>
+</section>
+
+<h2>All invites</h2>
+@if (Model.Invites.Count == 0)
+{
+    <p class="muted">No invites yet.</p>
+}
+else
+{
+    <div class="table-scroll">
+        <table class="grid">
+            <thead>
+                <tr>
+                    <th scope="col">For</th>
+                    <th scope="col">Status</th>
+                    <th scope="col">Issued</th>
+                    <th scope="col">Expires</th>
+                    <th scope="col">Used by</th>
+                    <th scope="col">Note</th>
+                    <th scope="col"></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var invite in Model.Invites)
+                {
+                    var status = InvitesModel.StatusOf(invite);
+                    <tr>
+                        <td>@(invite.Email?.ToLowerInvariant() ?? "Anyone")</td>
+                        <td><span class="badge @(status == "Open" ? "" : "quiet")">@status</span></td>
+                        <td>@PortalFormat.Time(invite.CreatedAtUtc) <div class="muted">by @Who(invite.CreatedByUserId)</div></td>
+                        <td>@PortalFormat.Time(invite.ExpiresAtUtc)</td>
+                        <td>
+                            @if (invite.RedeemedAtUtc is { } used)
+                            {
+                                @Who(invite.RedeemedByUserId) <div class="muted">@PortalFormat.Time(used)</div>
+                            }
+                            else
+                            {
+                                <span class="muted">—</span>
+                            }
+                        </td>
+                        <td>@invite.Note</td>
+                        <td class="actions">
+                            @if (invite.RedeemedAtUtc is null)
+                            {
+                                <form method="post" asp-page-handler="Revoke" class="inline">
+                                    <input type="hidden" name="inviteId" value="@invite.Id">
+                                    <button type="submit" class="secondary">Revoke</button>
+                                </form>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}

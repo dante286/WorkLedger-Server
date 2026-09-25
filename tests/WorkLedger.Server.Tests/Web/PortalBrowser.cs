@@ -22,10 +22,14 @@ internal sealed partial class PortalBrowser(HttpClient client)
 
     public Task<HttpResponseMessage> GetAsync(string path) => Client.GetAsync(path);
 
-    /// <summary>Loads <paramref name="formPage"/> for its antiforgery token, then posts the form to it.</summary>
+    /// <summary>
+    /// Loads <paramref name="formPage"/> for its antiforgery token, then posts the form to it. A
+    /// <c>?handler=</c> query names which form on the page is being submitted, so it is dropped for the
+    /// load and kept for the post.
+    /// </summary>
     public async Task<HttpResponseMessage> SubmitAsync(string formPage, params (string Name, string? Value)[] fields)
     {
-        var token = await FormTokenAsync(formPage);
+        var token = await FormTokenAsync(formPage.Contains("?handler=") ? formPage[..formPage.IndexOf('?')] : formPage);
         return await PostAsync(formPage, token, fields);
     }
 
