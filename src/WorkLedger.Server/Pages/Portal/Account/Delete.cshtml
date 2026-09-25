@@ -1,0 +1,39 @@
+@page
+@model WorkLedger.Server.Pages.Portal.Account.DeleteModel
+@{
+    ViewData["Title"] = "Delete account";
+}
+<partial name="_AccountNav" />
+
+<h1>Delete your account</h1>
+
+@if (Model.Error is not null)
+{
+    <p class="alert" role="alert">@Model.Error</p>
+}
+
+<section class="card">
+    <p>
+        <strong>This deletes your account and everything synced to it</strong> — every project, task and time
+        entry, from every device. It happens immediately and cannot be undone. Desktop installs signed in to
+        this account will be signed out the next time they sync; anything they have not synced stays on
+        those devices only.
+    </p>
+
+    @if (Model.IsLastAdmin)
+    {
+        <p class="alert">
+            You are this server's only administrator. If you delete your account, nobody will be able to manage
+            the other accounts or issue invites until someone with the server's setup secret makes themselves
+            administrator at <code>/portal/setup</code>. Consider making someone else an administrator first.
+        </p>
+    }
+
+    <form method="post" class="stacked">
+        <label for="password">Your password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+        <label for="confirm">Type <strong>@Model.Email</strong> to confirm</label>
+        <input id="confirm" name="confirmEmail" type="text" autocomplete="off" spellcheck="false" required>
+        <button type="submit" class="danger">Delete my account and all my data</button>
+    </form>
+</section>

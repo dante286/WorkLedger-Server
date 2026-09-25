@@ -1,0 +1,44 @@
+@page
+@model WorkLedger.Server.Pages.Portal.Account.SecurityModel
+@{
+    ViewData["Title"] = "Password & sign-out";
+}
+<partial name="_AccountNav" />
+
+<h1>Password &amp; sign-out</h1>
+
+@if (Model.Message is not null)
+{
+    <p class="notice" role="status">@Model.Message</p>
+}
+@if (Model.Error is not null)
+{
+    <p class="alert" role="alert">@Model.Error</p>
+}
+
+<section class="card">
+    <h2>Change your password</h2>
+    <p><strong>This signs out every desktop install</strong> signed in to your account; each one will need the new password. This browser stays signed in.</p>
+    <form method="post" asp-page-handler="Password" class="stacked">
+        <label for="current">Current password</label>
+        <input id="current" name="currentPassword" type="password" autocomplete="current-password" required>
+        <label for="new">New password</label>
+        <input id="new" name="newPassword" type="password" autocomplete="new-password" minlength="@Model.MinPasswordLength" required>
+        <p class="hint muted">At least @Model.MinPasswordLength characters.</p>
+        <label for="confirm">Confirm new password</label>
+        <input id="confirm" name="confirmPassword" type="password" autocomplete="new-password" required>
+        <button type="submit" class="primary">Change password</button>
+    </form>
+</section>
+
+<section class="card">
+    <h2>Sign out everywhere</h2>
+    <p>
+        Signs out every desktop install signed in to your account — use it if a device was lost or you think
+        someone else is using your account. Your password stays the same, and so does your data.
+        This browser stays signed in.
+    </p>
+    <form method="post" asp-page-handler="SignOutEverywhere">
+        <button type="submit" class="secondary">Sign out every device</button>
+    </form>
+</section>
