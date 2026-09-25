@@ -133,16 +133,7 @@ public sealed class RegistrationService(
         var isFirstUser = !await db.Users.AnyAsync(cancellationToken);
 
         var now = DateTime.UtcNow;
-        var user = new User
-        {
-            Email = credentials.Email,
-            NormalizedEmail = credentials.NormalizedEmail,
-            PasswordHash = passwords.Hash(credentials.Password),
-            DisplayName = credentials.DisplayName,
-            IsAdmin = isFirstUser,
-            CreatedAt = now,
-            UpdatedAt = now,
-        };
+        var user = NewUser(credentials, isAdmin: isFirstUser, now);
         db.Users.Add(user);
 
         try
@@ -166,6 +157,56 @@ public sealed class RegistrationService(
         }
 
         await transaction.CommitAsync(cancellationToken);
+        return new RegistrationResult.Succeeded(user);
+    }
+
+    /// <summary>
+    /// Creates the <b>first</b> account on an empty server — the administrator — on presentation of the
+    /// operator's secret. This is what <c>/portal/setup</c> runs on a fresh box (S11), replacing
+    /// registering the first account from the desktop client.
+    /// <para>
+    /// <b>The secret always suffices here, whatever <c>Auth:RegistrationEnabled</c> and
+    /// <c>Auth:SignupSecretEnabled</c> say</b>, for the reason <see cref="ClaimAsync"/> ignores them: those
+    /// flags decide how <i>other people</i> get accounts on a running server, and an operator who switched
+    /// them off before first boot must not be left with a server nobody can ever sign in to. The secret is
+    /// the proof of running the box, which is all creating its first account should need.
+    /// </para>
+    /// <para>
+    /// <b>Refused once any user exists</b> (<see cref="RegistrationRefusal.AlreadySetUp"/>), under a table
+    /// lock taken for the length of the insert. <see cref="RegisterAsync"/> accepts that two simultaneous
+    /// first registrations may both come out admin; this path does not have to, because it runs once per
+    /// server and the lock costs nothing then. Two operators racing the setup page get one account and one
+    /// refusal.
+    /// </para>
+    /// </summary>
+    public async Task<RegistrationResult> RegisterFirstUserAsync(
+        RegisterUserRequest? request, string? providedSecret, CancellationToken cancellationToken)
+    {
+        if (!bootstrap.SecretMatches(providedSecret))
+        {
+            return new RegistrationResult.Refused(RegistrationRefusal.Unauthorized);
+        }
+
+        if (!Credentials.TryValidate(request, auth, out var credentials, out var validationError))
+        {
+            return new RegistrationResult.Invalid(validationError);
+        }
+
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
+        // EXCLUSIVE blocks every other writer to Users until this commits, and still lets reads through.
+        await db.Database.ExecuteSqlRawAsync(@"LOCK TABLE ""Users"" IN EXCLUSIVE MODE", cancellationToken);
+
+        if (await db.Users.AnyAsync(cancellationToken))
+        {
+            return new RegistrationResult.Refused(RegistrationRefusal.AlreadySetUp);
+        }
+
+        var user = NewUser(credentials, isAdmin: true, DateTime.UtcNow);
+        db.Users.Add(user);
+        await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+
         return new RegistrationResult.Succeeded(user);
     }
 
@@ -216,6 +257,34 @@ public sealed class RegistrationService(
     }
 
     /// <summary>
+    /// The sentence a refusal is explained with, wherever it is shown — <c>/auth/register</c>'s error
+    /// body and <c>/portal/register</c>'s message are the same words, so the holder of a bad invite hears
+    /// the same thing from the server however they asked. Null for the refusals whose wording depends on
+    /// where they were raised (<see cref="RegistrationRefusal.Unauthorized"/> is a bare 401 on the JSON
+    /// API, and the rest name routes or pages).
+    /// </summary>
+    public static string? Sentence(RegistrationRefusal refusal) => refusal switch
+    {
+        RegistrationRefusal.Disabled => "Registration is disabled on this server.",
+        RegistrationRefusal.InviteUsed => "That invite has already been used.",
+        RegistrationRefusal.InviteExpired => "That invite has expired. Ask for a new one.",
+        RegistrationRefusal.InviteEmailMismatch => "That invite was issued for a different email address.",
+        RegistrationRefusal.DuplicateEmail => "An account with that email already exists.",
+        _ => null,
+    };
+
+    private User NewUser(Credentials credentials, bool isAdmin, DateTime now) => new()
+    {
+        Email = credentials.Email,
+        NormalizedEmail = credentials.NormalizedEmail,
+        PasswordHash = passwords.Hash(credentials.Password),
+        DisplayName = credentials.DisplayName,
+        IsAdmin = isAdmin,
+        CreatedAt = now,
+        UpdatedAt = now,
+    };
+
+    /// <summary>
     /// The only unique index on <c>Users</c> is the partial one on <c>NormalizedEmail</c>, so a unique
     /// violation from a user insert can only be a duplicate email. Matching on the SqlState rather than
     /// on the message keeps this independent of Postgres's error wording and of the locale it renders in.
@@ -252,4 +321,7 @@ public enum RegistrationRefusal
 
     /// <summary>Claim only: there is no unclaimed legacy row.</summary>
     NothingToClaim,
+
+    /// <summary>First-account setup only: the server already has users.</summary>
+    AlreadySetUp,
 }

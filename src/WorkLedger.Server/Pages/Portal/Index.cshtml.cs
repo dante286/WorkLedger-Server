@@ -10,8 +10,21 @@ namespace WorkLedger.Server.Pages.Portal;
 /// The account home. Scoped by the session's <c>user_id</c> and nothing else — the portal's version of
 /// the tenancy rule every JSON route follows with the token's.
 /// </summary>
-public sealed class IndexModel(WorkLedgerDbContext db) : PageModel
+public sealed class IndexModel(WorkLedgerDbContext db, WebOptions web) : PageModel
 {
+    /// <summary>
+    /// Set by the redirect after registering or setting the server up. Only changes wording, so anyone
+    /// may put it in the URL.
+    /// </summary>
+    [BindProperty(SupportsGet = true, Name = "welcome")]
+    public bool Welcome { get; set; }
+
+    /// <summary>
+    /// What to give the desktop app to sync with this server: the public address, since the portal and
+    /// the sync API share one origin. The handoff from web to client that onboarding ends with.
+    /// </summary>
+    public string ServerAddress => web.PublicBaseUrl!;
+
     public string Email { get; private set; } = string.Empty;
     public string? DisplayName { get; private set; }
     public DateTime CreatedAt { get; private set; }

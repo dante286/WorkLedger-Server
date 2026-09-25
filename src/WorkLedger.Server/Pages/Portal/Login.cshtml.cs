@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using WorkLedger.Server.Auth;
+using WorkLedger.Server.Data;
 using WorkLedger.Server.Web;
 
 namespace WorkLedger.Server.Pages.Portal;
@@ -25,8 +26,15 @@ namespace WorkLedger.Server.Pages.Portal;
 /// a lookalike.
 /// </para>
 /// </summary>
-public sealed class LoginModel(CredentialCheck credentialCheck) : PageModel
+public sealed class LoginModel(CredentialCheck credentialCheck, WorkLedgerDbContext db) : PageModel
 {
+    /// <summary>
+    /// Whether this server still needs <c>/portal/setup</c>, so a first-run operator arriving at the
+    /// sign-in page is pointed at it. It tells an anonymous caller nothing the setup page's own
+    /// <c>404</c>-or-not does not already.
+    /// </summary>
+    public bool SetupAvailable { get; private set; }
+
     [BindProperty]
     public string? Email { get; set; }
 
@@ -38,9 +46,17 @@ public sealed class LoginModel(CredentialCheck credentialCheck) : PageModel
 
     public string? Error { get; private set; }
 
-    public IActionResult OnGet() =>
+    public async Task<IActionResult> OnGetAsync(CancellationToken cancellationToken)
+    {
         // Already signed in: skip the form rather than invite a second session.
-        User.Identity?.IsAuthenticated == true ? RedirectToLocal() : Page();
+        if (User.Identity?.IsAuthenticated == true)
+        {
+            return RedirectToLocal();
+        }
+
+        SetupAvailable = await ServerSetup.ResolveAsync(db, cancellationToken) is not ServerSetupState.Ready;
+        return Page();
+    }
 
     public async Task<IActionResult> OnPostAsync(CancellationToken cancellationToken)
     {

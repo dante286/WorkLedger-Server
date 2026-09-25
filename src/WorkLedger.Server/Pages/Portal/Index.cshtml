@@ -3,6 +3,10 @@
 @{
     ViewData["Title"] = "Your account";
 }
+@if (Model.Welcome)
+{
+    <p class="notice" role="status">Your account is ready. Now sign in to the desktop app with it — details below.</p>
+}
 <section class="card">
     <h1>Your account</h1>
     <dl class="facts">
@@ -16,4 +20,13 @@
         <dt>Member since</dt>
         <dd>@PortalFormat.Time(Model.CreatedAt)</dd>
     </dl>
+</section>
+
+<section class="card">
+    <h2>Desktop app</h2>
+    <p>To sync your time with this server, sign in to the WorkLedger desktop app with your email and password, using this server address:</p>
+    <div class="copy-row">
+        <input id="server-address" class="server-address" type="text" readonly value="@Model.ServerAddress" aria-label="Server address">
+        <button type="button" class="secondary" data-copy="server-address" hidden>Copy</button>
+    </div>
 </section>

@@ -1,0 +1,60 @@
+@page
+@using WorkLedger.Server.Auth
+@model WorkLedger.Server.Pages.Portal.SetupModel
+@{
+    ViewData["Title"] = "Set up this server";
+    var createsAccount = Model.State is ServerSetupState.Empty or ServerSetupState.Unclaimed;
+}
+<section class="card narrow">
+    <h1>Set up this server</h1>
+    @switch (Model.State)
+    {
+        case ServerSetupState.Empty:
+            <p>This server has no accounts yet. Create the first one — it will be the administrator, who can then invite everyone else.</p>
+            break;
+        case ServerSetupState.Unclaimed:
+            <p>This server has data from before user accounts existed. Claim it by giving that account an email and a password; everything already synced to it is kept, and it becomes the administrator.</p>
+            break;
+        case ServerSetupState.NoAdmin:
+            <p>This server has accounts but no administrator. Sign in with your account to become it.</p>
+            break;
+    }
+
+    @if (Model.Error is not null)
+    {
+        <p class="alert" role="alert">@Model.Error</p>
+    }
+
+    <form method="post">
+        <label for="secret">Setup secret</label>
+        <input id="secret" name="Secret" type="password" autocomplete="off" required>
+        <p class="hint muted">The <code>Bootstrap__Secret</code> value this server was started with.</p>
+
+        <label for="email">Email</label>
+        <input id="email" name="Email" type="email" value="@Model.Email" autocomplete="username" required>
+
+        @if (createsAccount)
+        {
+            <label for="name">Display name <span class="muted">(optional)</span></label>
+            <input id="name" name="DisplayName" type="text" value="@Model.DisplayName" autocomplete="name">
+            <label for="password">Password</label>
+            <input id="password" name="Password" type="password" autocomplete="new-password" required>
+            <label for="confirm">Confirm password</label>
+            <input id="confirm" name="ConfirmPassword" type="password" autocomplete="new-password" required>
+        }
+        else
+        {
+            <label for="password">Password</label>
+            <input id="password" name="Password" type="password" autocomplete="current-password" required>
+        }
+
+        <button type="submit" class="primary">
+            @(Model.State switch
+            {
+                ServerSetupState.Empty => "Create administrator account",
+                ServerSetupState.Unclaimed => "Claim this server",
+                _ => "Become administrator",
+            })
+        </button>
+    </form>
+</section>

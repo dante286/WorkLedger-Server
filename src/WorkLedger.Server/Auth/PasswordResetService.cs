@@ -26,6 +26,14 @@ public sealed class PasswordResetService(
     IMemoryCache cache)
 {
     /// <summary>
+    /// The one sentence for every way a token can fail — unknown, expired or already spent — shown by
+    /// <c>POST /auth/password/reset</c> and <c>/portal/reset</c> alike. See <see cref="RedeemAsync"/>
+    /// for why the three are not distinguished.
+    /// </summary>
+    public const string InvalidTokenMessage =
+        "That reset link is not valid. It may have expired or already been used — ask for a new one.";
+
+    /// <summary>
     /// Mints a reset for <paramref name="userId"/> and returns the raw token, which the caller must hand
     /// back exactly once — only its <see cref="SingleUseToken.Hash"/> is stored.
     /// <para>

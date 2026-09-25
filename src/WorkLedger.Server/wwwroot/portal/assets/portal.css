@@ -197,3 +197,9 @@ details.danger-zone form { margin-top: 0.5rem; max-width: 22rem; }
 form.stacked { max-width: 26rem; }
 
 table.grid time { white-space: nowrap; }
+
+.hint { margin: 0.25rem 0 0; font-size: 0.875rem; }
+
+code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.875em; }
+
+.server-address { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }

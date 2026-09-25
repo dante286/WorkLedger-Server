@@ -1,0 +1,35 @@
+@page
+@model WorkLedger.Server.Pages.Portal.ResetModel
+@{
+    ViewData["Title"] = "Reset your password";
+}
+<section class="card narrow">
+    @if (Model.Done)
+    {
+        <h1>Password changed</h1>
+        <p>Your password has been changed. Every device has been signed out; sign in again on each one.</p>
+        <p><a href="/portal/login">Sign in</a></p>
+    }
+    else
+    {
+        <h1>Reset your password</h1>
+
+        @if (Model.Error is not null)
+        {
+            <p class="alert" role="alert">@Model.Error</p>
+        }
+
+        <form method="post">
+            <label for="token">Reset code</label>
+            <input id="token" name="Token" type="text" value="@Model.Token" data-fragment="token" autocomplete="off" spellcheck="false" required>
+            <p class="hint muted">Filled in from your reset link. If it isn't, paste the part of the link after <code>#token=</code>.</p>
+            <label for="password">New password</label>
+            <input id="password" name="Password" type="password" autocomplete="new-password" minlength="@Model.MinPasswordLength" required>
+            <p class="hint muted">At least @Model.MinPasswordLength characters.</p>
+            <label for="confirm">Confirm new password</label>
+            <input id="confirm" name="ConfirmPassword" type="password" autocomplete="new-password" required>
+            <button type="submit" class="primary">Change password</button>
+        </form>
+        <p class="muted">Changing your password signs you out of every device.</p>
+    }
+</section>
