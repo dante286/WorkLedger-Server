@@ -7,6 +7,11 @@
     <h1>Sign in</h1>
     <p class="muted">Manage your WorkLedger account. Your time is tracked in the desktop app.</p>
 
+    @if (Model.SetupAvailable)
+    {
+        <p class="notice">This server hasn't been set up yet. <a href="/portal/setup">Set it up</a> to create its administrator.</p>
+    }
+
     @if (Model.Error is not null)
     {
         <p class="alert" role="alert">@Model.Error</p>

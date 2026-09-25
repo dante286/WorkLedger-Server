@@ -307,18 +307,9 @@ public static class AuthEndpoints
                     new { error = "A request body with a reset token and a new password is required." }),
                 PasswordResetRedemption.InvalidPassword { Error: var error } =>
                     Results.BadRequest(new { error }),
-                _ => Error(StatusCodes.Status400BadRequest, InvalidResetToken),
+                _ => Error(StatusCodes.Status400BadRequest, PasswordResetService.InvalidTokenMessage),
             };
         }).AllowAnonymous().RequireRateLimiting(RateLimitPolicy);
-
-    private const string DuplicateEmail = "An account with that email already exists.";
-
-    /// <summary>
-    /// One message for every way a reset token can fail. See <see cref="PasswordResetService.RedeemAsync"/>
-    /// for why the three causes are not distinguished.
-    /// </summary>
-    private const string InvalidResetToken =
-        "That reset link is not valid. It may have expired or already been used — ask for a new one.";
 
     /// <summary>
     /// The status code and body for every way registration or claim can refuse. See
@@ -330,15 +321,12 @@ public static class AuthEndpoints
         RegistrationResult.Refused { Reason: var reason } => reason switch
         {
             RegistrationRefusal.Disabled =>
-                Error(StatusCodes.Status403Forbidden, "Registration is disabled on this server."),
-            RegistrationRefusal.InviteUsed =>
-                Error(StatusCodes.Status409Conflict, "That invite has already been used."),
-            RegistrationRefusal.InviteExpired =>
-                Error(StatusCodes.Status409Conflict, "That invite has expired. Ask for a new one."),
-            RegistrationRefusal.InviteEmailMismatch =>
-                Error(StatusCodes.Status409Conflict, "That invite was issued for a different email address."),
+                Error(StatusCodes.Status403Forbidden, RegistrationService.Sentence(reason)!),
+            RegistrationRefusal.InviteUsed or
+            RegistrationRefusal.InviteExpired or
+            RegistrationRefusal.InviteEmailMismatch or
             RegistrationRefusal.DuplicateEmail =>
-                Error(StatusCodes.Status409Conflict, DuplicateEmail),
+                Error(StatusCodes.Status409Conflict, RegistrationService.Sentence(reason)!),
             RegistrationRefusal.NothingToClaim => Error(
                 StatusCodes.Status409Conflict,
                 "Nothing to claim. This server has no unclaimed account — use POST /auth/register instead."),

@@ -1,0 +1,45 @@
+@page
+@model WorkLedger.Server.Pages.Portal.RegisterModel
+@{
+    ViewData["Title"] = "Create your account";
+}
+<section class="card narrow">
+    <h1>Create your account</h1>
+
+    @if (!Model.RegistrationOpen)
+    {
+        <p class="alert" role="alert">Registration is closed on this server. Ask its administrator for an account.</p>
+    }
+    else
+    {
+        <p class="muted">You'll use this account to sign in to the WorkLedger desktop app and to manage your account here.</p>
+
+        @if (Model.Error is not null)
+        {
+            <p class="alert" role="alert">@Model.Error</p>
+        }
+
+        <form method="post">
+            <label for="invite">Invite code</label>
+            <input id="invite" name="InviteToken" type="text" value="@Model.InviteToken" data-fragment="invite" autocomplete="off" spellcheck="false">
+            <p class="hint muted">Filled in from your invite link. If it isn't, paste the part of the link after <code>#invite=</code>.</p>
+
+            @if (Model.AcceptsSecret)
+            {
+                <label for="secret">Or the server's signup secret</label>
+                <input id="secret" name="Secret" type="password" autocomplete="off">
+            }
+
+            <label for="email">Email</label>
+            <input id="email" name="Email" type="email" value="@Model.Email" autocomplete="username" required>
+            <label for="name">Display name <span class="muted">(optional)</span></label>
+            <input id="name" name="DisplayName" type="text" value="@Model.DisplayName" autocomplete="name">
+            <label for="password">Password</label>
+            <input id="password" name="Password" type="password" autocomplete="new-password" minlength="@Model.MinPasswordLength" required>
+            <p class="hint muted">At least @Model.MinPasswordLength characters. A long phrase is better than a short complicated one.</p>
+            <label for="confirm">Confirm password</label>
+            <input id="confirm" name="ConfirmPassword" type="password" autocomplete="new-password" required>
+            <button type="submit" class="primary">Create account</button>
+        </form>
+    }
+</section>

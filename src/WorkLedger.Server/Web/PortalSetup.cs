@@ -41,6 +41,16 @@ internal static class PortalSetup
     private const string ContentSecurityPolicy =
         "default-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'; object-src 'none'";
 
+    /// <summary>
+    /// The pages that take a credential from someone who may not have a session — a password, the
+    /// operator's secret, an invite or a reset token. Each is anonymous and rate-limited.
+    /// </summary>
+    private static readonly string[] CredentialPages =
+        ["/Portal/Login", "/Portal/Setup", "/Portal/Register", "/Portal/Reset"];
+
+    /// <summary>Every page that works without a session: the credential pages, plus sign-out and access-denied.</summary>
+    private static readonly string[] AnonymousPages = [.. CredentialPages, "/Portal/Logout", "/Portal/Denied"];
+
     public static void AddPortal(this IServiceCollection services)
     {
         services.AddSingleton(sp => WebOptions.Resolve(sp.GetRequiredService<IConfiguration>()));
@@ -53,15 +63,19 @@ internal static class PortalSetup
             // fallback policy and fail closed, which is the direction to fail in.
             options.Conventions.AuthorizeFolder("/Portal", PortalSession.UserPolicy);
             options.Conventions.AuthorizeFolder("/Portal/Admin", PortalSession.AdminPolicy);
-            options.Conventions.AllowAnonymousToPage("/Portal/Login");
-            options.Conventions.AllowAnonymousToPage("/Portal/Logout");
-            options.Conventions.AllowAnonymousToPage("/Portal/Denied");
+            foreach (var page in AnonymousPages)
+            {
+                options.Conventions.AllowAnonymousToPage(page);
+            }
 
             // The same per-IP bucket as POST /auth/login: one box, one budget for guessing passwords,
-            // whichever form the guesses arrive through. The policy never limits a GET (see Program.cs),
-            // so rendering the form costs nothing.
-            options.Conventions.AddPageApplicationModelConvention("/Portal/Login", model =>
-                model.EndpointMetadata.Add(new EnableRateLimitingAttribute(AuthEndpoints.RateLimitPolicy)));
+            // secrets and tokens, whichever form the guesses arrive through. The policy never limits a
+            // GET (see Program.cs), so rendering a form costs nothing.
+            foreach (var page in CredentialPages)
+            {
+                options.Conventions.AddPageApplicationModelConvention(page, model =>
+                    model.EndpointMetadata.Add(new EnableRateLimitingAttribute(AuthEndpoints.RateLimitPolicy)));
+            }
         });
 
         // Pages live in Pages/Portal/, so generated links would otherwise read /Portal/Login.
