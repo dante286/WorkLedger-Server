@@ -76,6 +76,16 @@ builder.Services.AddScoped<ICurrentContext, CurrentContext>();
 builder.Services.AddScoped<SyncService>();
 builder.Services.AddScoped<ReportService>();
 
+// The account rules (S11). Every route in Auth/ is a thin caller of these, so anything else that signs
+// people in or manages accounts calls the same code rather than a copy of it.
+builder.Services.AddScoped<CredentialCheck>();
+builder.Services.AddScoped<AccountDeletion>();
+builder.Services.AddScoped<AccountSelfService>();
+builder.Services.AddScoped<AdminOperations>();
+builder.Services.AddScoped<InviteService>();
+builder.Services.AddScoped<PasswordResetService>();
+builder.Services.AddScoped<RegistrationService>();
+
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer();
 

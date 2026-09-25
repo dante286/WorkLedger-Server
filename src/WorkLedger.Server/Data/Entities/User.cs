@@ -49,7 +49,7 @@ public sealed class User
 
     /// <summary>
     /// Consecutive failed sign-in attempts. Zeroed on a successful login <b>and</b> once
-    /// <see cref="LockoutEndUtc"/> has passed — see <c>AuthEndpoints</c>' login doc for why the second
+    /// <see cref="LockoutEndUtc"/> has passed — see <c>CredentialCheck</c> for why the second
     /// of those is not optional.
     /// </summary>
     public int FailedLoginCount { get; set; }
@@ -84,7 +84,7 @@ public sealed class User
     /// creates an admin; on a deployment that already had users when S10 landed, they are all non-admin
     /// and <c>POST /admin/bootstrap</c> promotes the first caller who can present the signup secret.
     /// <b>The last remaining admin cannot be demoted, disabled or deleted</b> — see
-    /// <c>AdminEndpoints</c> — because a deployment with none is one only <c>psql</c> can repair.
+    /// <c>AdminOperations</c> — because a deployment with none is one only <c>psql</c> can repair.
     /// </para>
     /// </summary>
     public bool IsAdmin { get; set; }
