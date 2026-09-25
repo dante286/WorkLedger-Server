@@ -3,6 +3,8 @@
 @{
     ViewData["Title"] = "Your account";
 }
+<partial name="_AccountNav" />
+
 @if (Model.Welcome)
 {
     <p class="notice" role="status">Your account is ready. Now sign in to the desktop app with it — details below.</p>
@@ -21,6 +23,14 @@
         <dd>@PortalFormat.Time(Model.CreatedAt)</dd>
     </dl>
 </section>
+
+@if (User.HasClaim(WorkLedger.Server.Auth.TokenRevocation.AdminClaim, "true"))
+{
+    <section class="card">
+        <h2>Administration</h2>
+        <p>You are an administrator of this server. <a href="/portal/admin">Manage users and invites</a>.</p>
+    </section>
+}
 
 <section class="card">
     <h2>Desktop app</h2>

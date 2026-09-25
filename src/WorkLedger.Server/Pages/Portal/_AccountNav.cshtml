@@ -1,0 +1,10 @@
+@{
+    var current = Context.Request.Path.Value?.TrimEnd('/') ?? string.Empty;
+    string Tab(string path) => string.Equals(current, path, StringComparison.OrdinalIgnoreCase) ? "tab current" : "tab";
+}
+<nav class="tabs" aria-label="Your account">
+    <a class="@Tab("/portal")" href="/portal">Overview</a>
+    <a class="@Tab("/portal/account/devices")" href="/portal/account/devices">Devices</a>
+    <a class="@Tab("/portal/account/security")" href="/portal/account/security">Password &amp; sign-out</a>
+    <a class="@Tab("/portal/account/delete")" href="/portal/account/delete">Delete account</a>
+</nav>

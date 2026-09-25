@@ -45,11 +45,24 @@ internal static class PortalSetup
     /// The pages that take a credential from someone who may not have a session — a password, the
     /// operator's secret, an invite or a reset token. Each is anonymous and rate-limited.
     /// </summary>
-    private static readonly string[] CredentialPages =
+    private static readonly string[] AnonymousCredentialPages =
         ["/Portal/Login", "/Portal/Setup", "/Portal/Register", "/Portal/Reset"];
 
-    /// <summary>Every page that works without a session: the credential pages, plus sign-out and access-denied.</summary>
-    private static readonly string[] AnonymousPages = [.. CredentialPages, "/Portal/Logout", "/Portal/Denied"];
+    /// <summary>
+    /// Every page that works without a session: the credential pages, sign-out, access-denied, and the
+    /// page a just-deleted account lands on (its session went with it).
+    /// </summary>
+    private static readonly string[] AnonymousPages =
+        [.. AnonymousCredentialPages, "/Portal/Logout", "/Portal/Denied", "/Portal/Deleted"];
+
+    /// <summary>
+    /// Every page that checks a password, rate-limited. The signed-in ones re-verify the current password
+    /// before changing it or deleting the account; without a limit, a stolen session could guess at it
+    /// through them as fast as it liked. They do not touch the lockout counter, exactly as the JSON
+    /// routes do not — a wrong current password there is a message, not a sign-out.
+    /// </summary>
+    private static readonly string[] CredentialPages =
+        [.. AnonymousCredentialPages, "/Portal/Account/Security", "/Portal/Account/Delete"];
 
     public static void AddPortal(this IServiceCollection services)
     {

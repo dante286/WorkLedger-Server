@@ -55,6 +55,11 @@ internal static class PortalSession
     /// Signs <paramref name="user"/> in to the portal. <b>Session-only</b> (not persistent): the browser
     /// drops the cookie when it closes, and <c>Web:SessionHours</c> of inactivity ends it before that.
     /// Touches no <see cref="Device"/> row.
+    /// <para>
+    /// Also how a session <b>survives its own stamp rotation</b>: after a password change or a
+    /// sign-out-everywhere from the portal, calling this again with the updated user re-issues the cookie
+    /// carrying the new stamp, so the person is not bounced to sign-in by the thing they just did.
+    /// </para>
     /// </summary>
     public static Task SignInAsync(HttpContext httpContext, User user) =>
         httpContext.SignInAsync(Scheme, CreatePrincipal(user), new AuthenticationProperties { IsPersistent = false });
@@ -66,13 +71,25 @@ internal static class PortalSession
                 ?? throw new InvalidOperationException("No portal user on the current request."),
             CultureInfo.InvariantCulture);
 
-    private static ClaimsPrincipal CreatePrincipal(User user) =>
-        new(new ClaimsIdentity(
+    /// <summary>
+    /// <c>user_id</c> and <c>stamp</c> are what the session is validated on. The <c>NameIdentifier</c>
+    /// claim carries the same user id again, for antiforgery: its tokens are bound to the user they were
+    /// issued to, identified by <c>sub</c>, <c>NameIdentifier</c> or <c>upn</c> if present and otherwise by
+    /// a hash of <i>every</i> claim — which would include the stamp. Then re-issuing the session after a
+    /// password change or a sign-out-everywhere (which rotates the stamp but keeps the session) would
+    /// invalidate every form already on the page. With a stable identifier, it does not.
+    /// </summary>
+    private static ClaimsPrincipal CreatePrincipal(User user)
+    {
+        var userId = user.Id.ToString(CultureInfo.InvariantCulture);
+        return new(new ClaimsIdentity(
             [
-                new Claim(UserIdClaim, user.Id.ToString(CultureInfo.InvariantCulture)),
+                new Claim(UserIdClaim, userId),
+                new Claim(ClaimTypes.NameIdentifier, userId),
                 new Claim(TokenRevocation.StampClaim, user.SecurityStamp),
             ],
             Scheme));
+    }
 
     /// <summary>
     /// Runs on every request that authenticates with this scheme. Rejects the session — and deletes the

@@ -1,0 +1,60 @@
+@page
+@model WorkLedger.Server.Pages.Portal.Account.DevicesModel
+@{
+    ViewData["Title"] = "Devices";
+}
+<partial name="_AccountNav" />
+
+<h1>Devices</h1>
+<p class="muted">
+    The desktop installs signed in to your account. Removing one signs it out straight away.
+    <strong>It does not delete any of your data</strong> — your projects, tasks and time belong to your account,
+    not to the device that recorded them, and every other device keeps syncing them.
+</p>
+
+@if (Model.Message is not null)
+{
+    <p class="notice" role="status">@Model.Message</p>
+}
+@if (Model.Error is not null)
+{
+    <p class="alert" role="alert">@Model.Error</p>
+}
+
+@if (Model.Devices.Count == 0)
+{
+    <p class="muted">No devices are signed in to your account. Sign in from the WorkLedger desktop app and it will appear here.</p>
+}
+else
+{
+    <div class="table-scroll">
+        <table class="grid">
+            <thead>
+                <tr>
+                    <th scope="col">Device</th>
+                    <th scope="col">First signed in</th>
+                    <th scope="col">Last seen</th>
+                    <th scope="col"></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var device in Model.Devices)
+                {
+                    var label = string.IsNullOrWhiteSpace(device.Label) ? "Unnamed device" : device.Label;
+                    <tr>
+                        <td>@label</td>
+                        <td>@PortalFormat.Time(device.CreatedAtUtc)</td>
+                        <td>@(device.LastSeenUtc is { } seen ? PortalFormat.Time(seen) : "Never")</td>
+                        <td class="actions">
+                            <form method="post" asp-page-handler="Remove" class="inline">
+                                <input type="hidden" name="deviceId" value="@device.DeviceId">
+                                <input type="hidden" name="label" value="@label">
+                                <button type="submit" class="secondary">Sign out and remove</button>
+                            </form>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
