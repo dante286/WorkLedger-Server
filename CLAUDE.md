@@ -87,7 +87,10 @@ year-long token must not carry a year-long privilege. So a demotion or a suspens
 next request. **`Auth:StampCacheSeconds` is the lag**,
 but only for a revocation that happened somewhere else, because the endpoints that revoke evict the
 cache key themselves. The three sections below are the detail; the rules live as XML docs on
-`AuthEndpoints`, `AccountEndpoints`, `TokenRevocation`, `JwtTokenService` and `User`.
+`CredentialCheck`, `AccountSelfService`, `AccountDeletion`, `AdminOperations`, `TokenRevocation`,
+`JwtTokenService` and `User`. Since S11 the endpoint classes in `Auth/` are thin callers of those services
+and document only the HTTP surface (status codes, where the secret arrives from); a rule's reasoning lives
+on the service that enforces it.
 
 ### Tenancy: UserId always comes from the token
 
@@ -121,14 +124,14 @@ lag**, and paths that revoke evict the key directly so the common case is immedi
 a stale stamp is dead on arrival, which is why tests that mint their own must read the stored value.
 
 Three login behaviours look wrong until you know why, and all three are stated in full on
-`AuthEndpoints`' login doc: **every failure is the same 401** (unknown email, wrong password and
+`CredentialCheck`'s XML doc (S11 moved them there from the login endpoint): **every failure is the same 401** (unknown email, wrong password and
 credential-less row alike — unlike registration's honest 409, because login needs no secret); **the
 lockout counter resets when the window expires**, not only on success; and **a 423 writes nothing at
 all**, neither incrementing the counter nor re-stamping `LockoutEndUtc`. The last two are what stop an
 account being permanently locked. `Auth:MaxFailedLogins`/`Auth:LockoutMinutes` are enforced from the same
 `AuthOptions` accessor `/auth/capabilities` advertises them from — don't introduce a second pair.
 
-### Account and device management (`src/WorkLedger.Server/Auth/AccountEndpoints.cs`)
+### Account and device management (`Auth/AccountEndpoints.cs` → `Auth/AccountSelfService.cs`)
 
 S8's four authenticated routes, all scoped by the token alone. Three of them kill tokens and each evicts
 the affected `TokenRevocation` cache keys **after** its write commits, so revocation is immediate rather
@@ -145,7 +148,8 @@ they fail if that eviction is dropped. Two behaviours look wrong and are not:
   explicit children-first order is what makes the endpoint independent of that and what produces the
   per-table counts in its single warning line. **That line carries the user id and never the email**, for
   the same reason the request log records only method/path/status. A push racing the delete cannot leave
-  orphans — see the endpoint's XML doc for why no row lock is taken.
+  orphans — see `AccountDeletion`'s XML doc for why no row lock is taken. That class is the one deletion
+  pipeline; `DELETE /admin/users/{id}` runs the same one, inside the transaction holding its last-admin lock.
 
 ### Sync (`src/WorkLedger.Server/Sync/`)
 

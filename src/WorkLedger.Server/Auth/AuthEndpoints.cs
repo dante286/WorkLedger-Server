@@ -1,9 +1,5 @@
 using System.Globalization;
-using System.Security.Cryptography;
-using System.Text;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Caching.Memory;
-using Npgsql;
 using WorkLedger.Contracts.Auth;
 using WorkLedger.Server.Data;
 using WorkLedger.Server.Data.Entities;
@@ -28,12 +24,14 @@ public static class AuthEndpoints
     /// registered in one call, but live in their own file because none of them takes a credential from an
     /// anonymous caller.
     /// <para>
-    /// <b>The secret's job moved, twice.</b> In S2 <c>X-Bootstrap-Secret</c> gated device bootstrap and
-    /// was therefore a token-issuing credential; from S6 it gates signup; from S7, with
-    /// <c>/auth/register-device</c> gone, it can no longer mint a token at all — only a password can.
-    /// That is a strict security improvement, and the configuration key and header name are deliberately
-    /// unchanged so an existing deployment keeps its posture and its operator changes nothing in
-    /// <c>.env</c>.
+    /// <b>The rules live in services, not here</b> (S11): <see cref="CredentialCheck"/>,
+    /// <see cref="RegistrationService"/>, <see cref="PasswordResetService"/> and
+    /// <see cref="AccountSelfService"/>. What stays in this file is the HTTP surface — which status code
+    /// each outcome is, where the secret arrives from, and what comes back.
+    /// </para>
+    /// <para>
+    /// <b>The secret arrives in <c>X-Bootstrap-Secret</c></b>, a header, so it never reaches the request
+    /// log (see <c>Program.cs</c>). See <see cref="RegistrationService"/> for how its job has changed.
     /// </para>
     /// </summary>
     public static void MapAuthEndpoints(this WebApplication app)
@@ -79,10 +77,11 @@ public static class AuthEndpoints
         }).AllowAnonymous();
 
     /// <summary>
-    /// Creates a user. Four gates in a fixed order, each with its own distinct failure, because an
-    /// operator debugging a rejected signup needs to know which rule stopped it:
-    /// <c>403</c> registration disabled, <c>401</c> bad secret, <c>400</c> bad email or password,
-    /// <c>409</c> email already taken.
+    /// Creates a user through <see cref="RegistrationService.RegisterAsync"/>, whose doc states the gates,
+    /// their order and why each refusal says what it says. On the wire: <c>403</c> registration disabled,
+    /// <c>401</c> no acceptable credential (or an unknown invite token), <c>409</c> a used, expired or
+    /// wrongly-addressed invite, <c>400</c> bad email or password, <c>409</c> email already taken, and
+    /// <c>201</c> + <see cref="UserSummary"/> on success.
     /// <para>
     /// <b>403 rather than 404 when registration is off.</b> <c>/auth/capabilities</c> already advertises
     /// the flag, so hiding the route buys no secrecy and costs an operator a confusing session.
@@ -96,190 +95,35 @@ public static class AuthEndpoints
         app.MapPost("/auth/register", async (
             RegisterUserRequest request,
             HttpRequest httpRequest,
-            WorkLedgerDbContext db,
-            AuthOptions auth,
-            BootstrapOptions bootstrap,
-            PasswordService passwords,
+            RegistrationService registration,
             CancellationToken cancellationToken) =>
         {
-            if (!auth.RegistrationEnabled)
-            {
-                return Error(StatusCodes.Status403Forbidden, "Registration is disabled on this server.");
-            }
-
-            // Two accepted credentials, not two modes: either satisfies this endpoint, and
-            // /auth/capabilities advertises which ones this server will take.
-            var secretAccepted = auth.SignupSecretEnabled && SecretMatches(httpRequest, bootstrap);
-            var inviteToken = request?.InviteToken?.Trim();
-
-            if (!secretAccepted && string.IsNullOrEmpty(inviteToken))
-            {
-                return Results.Unauthorized();
-            }
-
-            // Opened here rather than around the insert alone, because the invite has to be locked
-            // before it is inspected and stay locked until it is spent — see the FOR UPDATE below.
-            await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
-
-            Invite? invite = null;
-            if (!secretAccepted)
-            {
-                invite = await FindInviteForUpdateAsync(db, inviteToken!, cancellationToken);
-
-                // An unknown token is a 401, the same answer as bringing no credential at all: it is
-                // indistinguishable from a typo or a guess, and this endpoint is reachable by anyone.
-                // The 409s below are different — they mean "this really is an invite, and here is what
-                // is wrong with it", which the holder needs in order to go back to whoever sent it.
-                if (invite is null)
-                {
-                    return Results.Unauthorized();
-                }
-
-                if (invite.RedeemedAtUtc is not null)
-                {
-                    return Error(StatusCodes.Status409Conflict, "That invite has already been used.");
-                }
-
-                if (invite.ExpiresAtUtc <= DateTime.UtcNow)
-                {
-                    return Error(StatusCodes.Status409Conflict, "That invite has expired. Ask for a new one.");
-                }
-            }
-
-            if (!Credentials.TryValidate(request, auth, out var credentials, out var validationError))
-            {
-                return Results.BadRequest(new { error = validationError });
-            }
-
-            // Checked after validation because it needs the normalized address, and reported frankly for
-            // the same reason the duplicate-email 409 is: the caller holds a one-time token addressed to
-            // somebody, so there is nothing left to hide, and a vague refusal would send them in circles.
-            if (invite?.NormalizedEmail is { } boundTo &&
-                !string.Equals(boundTo, credentials.NormalizedEmail, StringComparison.Ordinal))
-            {
-                return Error(
-                    StatusCodes.Status409Conflict,
-                    "That invite was issued for a different email address.");
-            }
-
-            // This 409 does enumerate accounts, which is an accepted tradeoff behind a shared secret on
-            // a self-hosted box: the honest error is worth far more than the leak costs when the caller
-            // already had to know the operator's signup secret to get here.
-            //
-            // NOTE THE ASYMMETRY, AND DO NOT "FIX" IT. Login answers a wrong email and a wrong password
-            // identically, because it is reachable with no secret at all. Registration being frank about
-            // a duplicate is not a precedent for login being frank about anything.
-            if (await db.Users.AnyAsync(u => u.NormalizedEmail == credentials.NormalizedEmail, cancellationToken))
-            {
-                return Error(StatusCodes.Status409Conflict, DuplicateEmail);
-            }
-
-            // The first account on an empty database is the administrator (S10). Deterministic, needs
-            // no seed and no configuration, and follows from what this server already promises: nothing
-            // is seeded, and the first registration creates the first user — who on a fresh box is by
-            // definition the person setting it up. A deployment that upgraded into S10 with users
-            // already in it gets its first admin from POST /admin/bootstrap instead.
-            //
-            // Two genuinely simultaneous first registrations can both read zero here and both come out
-            // admin. That is harmless on a brand-new box and is deliberately not guarded: a lock on
-            // every signup to shave a race nobody is running would cost more than the outcome does.
-            var isFirstUser = !await db.Users.AnyAsync(cancellationToken);
-
-            var now = DateTime.UtcNow;
-            var user = new User
-            {
-                Email = credentials.Email,
-                NormalizedEmail = credentials.NormalizedEmail,
-                PasswordHash = passwords.Hash(credentials.Password),
-                DisplayName = credentials.DisplayName,
-                IsAdmin = isFirstUser,
-                CreatedAt = now,
-                UpdatedAt = now,
-            };
-            db.Users.Add(user);
-
-            try
-            {
-                await db.SaveChangesAsync(cancellationToken);
-            }
-            catch (DbUpdateException ex) when (IsUniqueViolation(ex))
-            {
-                // Two simultaneous signups for one address both clear the AnyAsync check above; the
-                // partial unique index on NormalizedEmail is what actually settles it. Report the loser
-                // as the conflict it is rather than as a 500.
-                //
-                // The invite is NOT burned by this: the transaction rolls back on dispose, so a
-                // registration that loses the race leaves its invite exactly as it found it.
-                return Error(StatusCodes.Status409Conflict, DuplicateEmail);
-            }
-
-            if (invite is not null)
-            {
-                // Stamped, not deleted — who invited whom is most of the reason the table exists.
-                invite.RedeemedAtUtc = now;
-                invite.RedeemedByUserId = user.Id;
-                await db.SaveChangesAsync(cancellationToken);
-            }
-
-            await transaction.CommitAsync(cancellationToken);
+            var result = await registration.RegisterAsync(
+                request, ProvidedSecret(httpRequest), cancellationToken);
 
             // Results.Created would advertise a Location this API does not serve — there is no
             // GET /users/{id}, and S8 has no plans for one.
-            return Results.Json(Summarize(user), statusCode: StatusCodes.Status201Created);
+            return result is RegistrationResult.Succeeded { User: var user }
+                ? Results.Json(Summarize(user), statusCode: StatusCodes.Status201Created)
+                : RegistrationFailure(result);
         }).AllowAnonymous().RequireRateLimiting(RateLimitPolicy);
 
     /// <summary>
-    /// The upgrade path for a deployment that already has the S2-seeded account and real data: attaches
-    /// email and password to <b>that row</b>, in place, so every project, task, time entry and enrolled
-    /// device carries over untouched. <c>200</c> + <see cref="UserSummary"/>, or <c>409</c> when there is
-    /// nothing claimable — see <see cref="UnclaimedUser"/> for what that means.
-    /// <para>
-    /// <b>Not subject to <c>Auth:RegistrationEnabled</c>.</b> An operator who switched registration off
-    /// must still be able to claim their own existing data; the two flags answer different questions.
-    /// </para>
-    /// <para>
-    /// <b>SecurityStamp is not bumped here.</b> The stamp revokes outstanding tokens, and attaching a
-    /// first password is not a credential rotation. (Those pre-S7 tokens carry no <c>stamp</c> claim and
-    /// are refused on their own account — see <see cref="TokenRevocation"/>. What claiming preserves is
-    /// the row, its data and its enrolled devices; every device then signs in once.)
-    /// </para>
+    /// Claims the pre-S6 legacy row through <see cref="RegistrationService.ClaimAsync"/>: <c>200</c> +
+    /// <see cref="UserSummary"/>, <c>401</c> for a bad secret, <c>400</c> for bad input, or <c>409</c> when
+    /// there is nothing claimable.
     /// </summary>
     private static void MapClaim(WebApplication app) =>
         app.MapPost("/auth/claim", async (
             RegisterUserRequest request,
             HttpRequest httpRequest,
-            WorkLedgerDbContext db,
-            AuthOptions auth,
-            BootstrapOptions bootstrap,
-            PasswordService passwords,
+            RegistrationService registration,
             CancellationToken cancellationToken) =>
         {
-            if (!SecretMatches(httpRequest, bootstrap))
-            {
-                return Results.Unauthorized();
-            }
-
-            if (!Credentials.TryValidate(request, auth, out var credentials, out var validationError))
-            {
-                return Results.BadRequest(new { error = validationError });
-            }
-
-            var user = await UnclaimedUser.FindAsync(db, cancellationToken);
-            if (user is null)
-            {
-                return Error(
-                    StatusCodes.Status409Conflict,
-                    "Nothing to claim. This server has no unclaimed account — use POST /auth/register instead.");
-            }
-
-            user.Email = credentials.Email;
-            user.NormalizedEmail = credentials.NormalizedEmail;
-            user.PasswordHash = passwords.Hash(credentials.Password);
-            user.DisplayName = credentials.DisplayName ?? user.DisplayName;
-            user.UpdatedAt = DateTime.UtcNow;
-            await db.SaveChangesAsync(cancellationToken);
-
-            return Results.Ok(Summarize(user));
+            var result = await registration.ClaimAsync(request, ProvidedSecret(httpRequest), cancellationToken);
+            return result is RegistrationResult.Succeeded { User: var user }
+                ? Results.Ok(Summarize(user))
+                : RegistrationFailure(result);
         }).AllowAnonymous().RequireRateLimiting(RateLimitPolicy);
 
     /// <summary>
@@ -290,55 +134,19 @@ public static class AuthEndpoints
     /// compares <c>OriginDeviceId</c> to decide what to echo back on a pull, and the tenancy invariant is
     /// that <c>UserId</c> comes from the token.
     /// <para>
+    /// <b>Check, then enroll, then mint.</b> The password and the lockout are
+    /// <see cref="CredentialCheck"/>'s, and its doc carries the rules that look wrong until you know why:
+    /// <b>every failure is the same <c>401</c></b> <c>{ error = "Invalid email or password." }</c>,
+    /// <b>the counter resets when the lockout window expires</b>, and <b>a <c>423</c> for an account
+    /// already locked writes nothing at all</b>. The attempt that crosses the threshold also answers
+    /// <c>423</c>, with a <c>Retry-After</c>.
+    /// </para>
+    /// <para>
     /// <b>Enrollment is a side effect of signing in.</b> The device row is upserted under this user with
     /// the idempotent semantics <c>/auth/register-device</c> had, so a second login from the same install
     /// reuses its row rather than accumulating duplicates. The same <c>DeviceId</c> presented by a
     /// <i>different</i> user is a different row under a different user and shares nothing with the first:
     /// the unique index is on <c>(UserId, DeviceId)</c>, not on <c>DeviceId</c> alone.
-    /// </para>
-    /// <para>
-    /// <b>Every failure is the same 401, deliberately.</b> Unknown email, wrong password and a
-    /// credential-less unclaimed row (see <see cref="User"/>) all answer
-    /// <c>{ error = "Invalid email or password." }</c>. This endpoint is reachable by anyone who has the
-    /// URL, so a distinguishable "no such account" would make it an account-enumeration oracle. It reads
-    /// as inconsistent next to registration's honest <c>409</c> on a duplicate email — that asymmetry is
-    /// intentional and is explained where the 409 is raised: registration sits behind the operator's
-    /// shared secret, and this does not.
-    /// </para>
-    /// <para>
-    /// <b>The three lockout counter rules.</b> The first is obvious; the other two are what a naive
-    /// implementation gets wrong.
-    /// <list type="number">
-    /// <item><description>
-    /// <b>Counters reset on success.</b> A successful login zeroes <c>FailedLoginCount</c> and clears
-    /// <c>LockoutEndUtc</c>.
-    /// </description></item>
-    /// <item><description>
-    /// <b>The counter also resets when the lockout window expires</b>, before the attempt is evaluated.
-    /// Without this, a successful login is the only thing that ever clears the count, so after the first
-    /// lockout the count stays at the threshold forever: the window lifts, the user's next single typo is
-    /// compared against a counter already at the limit, and the account re-locks immediately. It is then
-    /// permanently on one-typo-per-<c>Auth:LockoutMinutes</c>, escapable only by a successful login —
-    /// exactly what a user who has forgotten which password they used cannot produce.
-    /// </description></item>
-    /// <item><description>
-    /// <b>A 423 writes nothing at all</b> — no increment, no re-stamp. The naive
-    /// <c>LockoutEndUtc = now + LockoutMinutes</c> on every refusal lets anything that polls this
-    /// endpoint hold the account locked <i>indefinitely</i>: a buggy client, a script, or anyone who
-    /// knows the email address. On a self-hosted box the locked-out user <i>is</i> the operator, the
-    /// lockout refuses their correct password, and the only recovery is a <c>psql</c> <c>UPDATE</c>
-    /// against the volume. The window is computed once, at the moment the threshold is crossed, and only
-    /// read thereafter.
-    /// </description></item>
-    /// </list>
-    /// Known tradeoff even with all three in place: on a single-user instance, someone who knows the
-    /// email can keep the owner locked out <c>Auth:LockoutMinutes</c> at a time by burning the counter
-    /// down again. That is accepted for a self-hosted app — the alternative, no lockout at all, is worse
-    /// — and rule 3 is what keeps it <i>at a time</i> rather than permanent.
-    /// </para>
-    /// <para>
-    /// The lockout is checked <b>before</b> the hash is verified, so a locked account burns no PBKDF2
-    /// cycles, and the correct password is refused for as long as the window lasts.
     /// </para>
     /// <para>
     /// One race is left exactly as <c>/auth/register-device</c> left it: two genuinely simultaneous
@@ -352,8 +160,7 @@ public static class AuthEndpoints
             LoginRequest request,
             HttpResponse httpResponse,
             WorkLedgerDbContext db,
-            AuthOptions auth,
-            PasswordService passwords,
+            CredentialCheck credentialCheck,
             JwtTokenService tokenService,
             CancellationToken cancellationToken) =>
         {
@@ -362,80 +169,18 @@ public static class AuthEndpoints
                 return Results.BadRequest(new { error = "DeviceId is required." });
             }
 
-            var normalizedEmail = (request.Email?.Trim() ?? string.Empty).ToUpperInvariant();
-            var user = normalizedEmail.Length == 0
-                ? null
-                : await db.Users.SingleOrDefaultAsync(
-                    u => u.NormalizedEmail == normalizedEmail, cancellationToken);
-
-            // One condition, two very different causes — no such user, and an unclaimed row with no
-            // password to check — and deliberately the same answer for both.
-            if (user?.PasswordHash is null)
+            var check = await credentialCheck.CheckAsync(request.Email, request.Password, cancellationToken);
+            if (check is not CredentialCheckResult.Verified { User: var user })
             {
-                return InvalidCredentials();
+                // The caller's next question after a 423 is "when can I try again", and Retry-After is
+                // the answer to it.
+                return check is CredentialCheckResult.LockedOut { UntilUtc: var until }
+                    ? LockedOut(httpResponse, until, DateTime.UtcNow)
+                    : InvalidCredentials();
             }
-
-            // A suspended account (S10) is a third cause answering the same 401. Saying "this account is
-            // suspended" would tell an anonymous caller that the address exists, which is exactly what
-            // the uniform 401 below exists to prevent — the admin who suspended it can see the state on
-            // /admin/users, and the person affected has to ask them either way.
-            //
-            // Checked before the hash is verified, like the lockout, so a suspended account burns no
-            // PBKDF2 cycles; and it writes nothing, so it cannot move the failure counter either.
-            if (user.DisabledAtUtc is not null)
-            {
-                return InvalidCredentials();
-            }
-
-            var now = DateTime.UtcNow;
-
-            // Rule 2: an expired window is cleared before the attempt is evaluated, never after.
-            if (user.LockoutEndUtc is { } expired && expired <= now)
-            {
-                user.FailedLoginCount = 0;
-                user.LockoutEndUtc = null;
-            }
-
-            // Rule 3: a pure read of state. Reached only when rule 2 did not clear the window, and it
-            // writes nothing — not the counter, not the window.
-            if (auth.LockoutEnabled && user.LockoutEndUtc is { } lockedUntil)
-            {
-                return LockedOut(httpResponse, lockedUntil, now);
-            }
-
-            var verification = passwords.Verify(user.PasswordHash, request.Password ?? string.Empty);
-            if (verification is PasswordVerification.Failed)
-            {
-                user.FailedLoginCount++;
-                if (auth.LockoutEnabled && user.FailedLoginCount >= auth.MaxFailedLogins)
-                {
-                    user.LockoutEndUtc = now + auth.LockoutWindow;
-                }
-
-                var justLocked = user.LockoutEndUtc;
-                user.UpdatedAt = now;
-                await db.SaveChangesAsync(cancellationToken);
-
-                // The attempt that crosses the threshold answers 423 rather than 401: the caller's next
-                // question is "when can I try again", and Retry-After is the answer to it.
-                return justLocked is { } until ? LockedOut(httpResponse, until, now) : InvalidCredentials();
-            }
-
-            // Rehash on the way through. The whole point of a versioned hasher is that an
-            // iteration-count bump is detectable rather than a silent lockout years from now, and acting
-            // on it costs one column on a login that was already writing.
-            if (verification is PasswordVerification.RehashNeeded)
-            {
-                user.PasswordHash = passwords.Hash(request.Password!);
-            }
-
-            user.FailedLoginCount = 0;
-            user.LockoutEndUtc = null;
-            user.LastLoginUtc = now;
-            user.UpdatedAt = now;
 
             var device = await UpsertDeviceAsync(
-                db, user.Id, request.DeviceId, request.DeviceLabel, now, cancellationToken);
+                db, user.Id, request.DeviceId, request.DeviceLabel, DateTime.UtcNow, cancellationToken);
             await db.SaveChangesAsync(cancellationToken);
 
             var (token, expiresAtUtc) = tokenService.IssueToken(
@@ -444,23 +189,14 @@ public static class AuthEndpoints
         }).AllowAnonymous().RequireRateLimiting(RateLimitPolicy);
 
     /// <summary>
-    /// Rotates the caller's password. <b>The current password is re-verified even though the caller
-    /// already holds a valid token</b> (<c>401</c> on mismatch): a stolen token must not be enough to
-    /// take the account over. The new password goes through the same policy registration applies
-    /// (<c>400</c>), from the same accessor, so the two cannot drift.
+    /// Rotates the caller's password through <see cref="AccountSelfService.ChangePasswordAsync"/>, which
+    /// re-verifies the current one and bumps the stamp — see there for why. <c>401</c> on a wrong current
+    /// password, <c>400</c> on a new one that fails policy, and <c>409</c> naming <c>/auth/claim</c> for the
+    /// unclaimed legacy row.
     /// <para>
-    /// Bumping <c>SecurityStamp</c> is what makes this a real rotation: every outstanding token dies, on
-    /// every device — <i>including the caller's own</i>. So the response carries a freshly minted token
-    /// for the calling device, because otherwise changing your password signs you out of the app you
-    /// just changed it in, which reads as a bug. The other devices' cache entries are evicted directly
-    /// rather than left to expire, so their sign-out is immediate rather than lagging
-    /// <c>Auth:StampCacheSeconds</c> behind.
-    /// </para>
-    /// <para>
-    /// The unclaimed legacy row (a null <c>PasswordHash</c>) gets a <c>409</c> naming <c>/auth/claim</c>
-    /// rather than a <c>401</c>: there is no current password to mismatch, the caller is already
-    /// authenticated so there is nothing to hide, and a 401 would send an operator hunting for a
-    /// password that never existed.
+    /// The stamp bump signs out every device <i>including the caller's own</i>, so the <c>200</c> carries
+    /// a freshly minted token for the calling device: otherwise changing your password signs you out of
+    /// the app you just changed it in, which reads as a bug.
     /// </para>
     /// </summary>
     private static void MapChangePassword(WebApplication app) =>
@@ -468,10 +204,8 @@ public static class AuthEndpoints
             ChangePasswordRequest request,
             ICurrentContext currentContext,
             WorkLedgerDbContext db,
-            AuthOptions auth,
-            PasswordService passwords,
+            AccountSelfService selfService,
             JwtTokenService tokenService,
-            IMemoryCache cache,
             CancellationToken cancellationToken) =>
         {
             if (request is null)
@@ -480,49 +214,36 @@ public static class AuthEndpoints
                     new { error = "A request body with the current and new password is required." });
             }
 
-            var user = await db.Users.SingleOrDefaultAsync(
-                u => u.Id == currentContext.UserId, cancellationToken);
             var device = await db.Devices.SingleOrDefaultAsync(
                 d => d.Id == currentContext.DeviceRowId && d.UserId == currentContext.UserId, cancellationToken);
-            if (user is null || device is null)
+            if (device is null)
             {
                 // TokenRevocation refuses a token whose user or device row is gone, so this is all but
                 // unreachable — it exists so the nullable checks below are not wishful.
                 return Results.Unauthorized();
             }
 
-            if (user.PasswordHash is null)
+            var result = await selfService.ChangePasswordAsync(
+                currentContext.UserId, request.CurrentPassword, request.NewPassword, cancellationToken);
+
+            switch (result.Outcome)
             {
-                return Error(
-                    StatusCodes.Status409Conflict,
-                    "This account has no password yet. Set one with POST /auth/claim.");
+                case SelfServiceOutcome.Done:
+                    var user = result.User!;
+                    var (token, expiresAtUtc) = tokenService.IssueToken(
+                        user.Id, device.Id, device.DeviceId, user.SecurityStamp);
+                    return Results.Ok(new LoginResponse(token, expiresAtUtc, Summarize(user)));
+                case SelfServiceOutcome.NoPassword:
+                    return Error(
+                        StatusCodes.Status409Conflict,
+                        "This account has no password yet. Set one with POST /auth/claim.");
+                case SelfServiceOutcome.WrongPassword:
+                    return Error(StatusCodes.Status401Unauthorized, "Current password is incorrect.");
+                case SelfServiceOutcome.InvalidPassword:
+                    return Results.BadRequest(new { error = result.Error });
+                default:
+                    return Results.Unauthorized();
             }
-
-            if (passwords.Verify(user.PasswordHash, request.CurrentPassword ?? string.Empty) is
-                PasswordVerification.Failed)
-            {
-                return Error(StatusCodes.Status401Unauthorized, "Current password is incorrect.");
-            }
-
-            if (!Credentials.TryValidatePassword(request.NewPassword, auth, out var validationError))
-            {
-                return Results.BadRequest(new { error = validationError });
-            }
-
-            user.PasswordHash = passwords.Hash(request.NewPassword ?? string.Empty);
-            user.SecurityStamp = Guid.NewGuid().ToString();
-            user.FailedLoginCount = 0;
-            user.LockoutEndUtc = null;
-            user.UpdatedAt = DateTime.UtcNow;
-            await db.SaveChangesAsync(cancellationToken);
-
-            // After the commit, never before: evicting first would only let a request already in flight
-            // re-cache the stamp this call just replaced.
-            await TokenRevocation.EvictUserAsync(db, cache, user.Id, cancellationToken);
-
-            var (token, expiresAtUtc) = tokenService.IssueToken(
-                user.Id, device.Id, device.DeviceId, user.SecurityStamp);
-            return Results.Ok(new LoginResponse(token, expiresAtUtc, Summarize(user)));
         });
 
     /// <summary>
@@ -552,147 +273,85 @@ public static class AuthEndpoints
         });
 
     /// <summary>
-    /// Spends a reset token issued by <c>POST /admin/users/{id}/password-reset</c>: sets the new
-    /// password, signs every device out, and returns <c>204</c>.
+    /// Spends a reset token issued by <c>POST /admin/users/{id}/password-reset</c> through
+    /// <see cref="PasswordResetService.RedeemAsync"/>: sets the new password, signs every device out, and
+    /// returns <c>204</c>.
     /// <para>
     /// <b>Anonymous, because the whole point is a caller who cannot authenticate.</b> The token is the
     /// credential, and it is rate-limited under the same policy as login, registration and claim.
     /// </para>
     /// <para>
-    /// <b>Unknown, expired and already-spent tokens are one identical <c>400</c>.</b> Distinguishing
-    /// them would turn an anonymous endpoint into an oracle about which tokens have existed — the same
-    /// reasoning as login's uniform <c>401</c>, and worth the slightly worse error message.
+    /// <b>Unknown, expired and already-spent tokens are one identical <c>400</c></b> — see the service for
+    /// why. A new password that fails policy is a <c>400</c> naming the rule, and leaves the token
+    /// spendable.
     /// </para>
     /// <para>
     /// <b>No token comes back, unlike <c>POST /auth/password</c>.</b> That one re-mints for the calling
     /// device because the caller was already signed in on it; here there is no device to mint for — the
-    /// request names none — and signing every device in again is the correct outcome for a credential
-    /// the person had lost control of. The stamp bump is what does it.
-    /// </para>
-    /// <para>
-    /// <b>The lockout counters are cleared.</b> Somebody resetting a password has very often just locked
-    /// themselves out guessing at the old one, and leaving the counter armed would refuse the password
-    /// they set ten seconds earlier.
-    /// </para>
-    /// <para>
-    /// <b>It does not un-suspend anybody.</b> Setting a credential and restoring access are different
-    /// decisions, and only an admin makes the second one.
+    /// request names none.
     /// </para>
     /// </summary>
     private static void MapResetPassword(WebApplication app) =>
         app.MapPost("/auth/password/reset", async (
             ResetPasswordRequest? request,
-            WorkLedgerDbContext db,
-            AuthOptions auth,
-            PasswordService passwords,
-            IMemoryCache cache,
+            PasswordResetService passwordResets,
             CancellationToken cancellationToken) =>
         {
-            var token = request?.ResetToken?.Trim();
-            if (string.IsNullOrEmpty(token))
+            var result = await passwordResets.RedeemAsync(
+                request?.ResetToken, request?.NewPassword, cancellationToken);
+
+            return result switch
             {
-                return Results.BadRequest(
-                    new { error = "A request body with a reset token and a new password is required." });
-            }
-
-            // Validated before the token is looked up, so a caller who has fat-fingered their new
-            // password is told so rather than being made to ask for another token. The token is
-            // single-use, not single-attempt.
-            if (!Credentials.TryValidatePassword(request!.NewPassword, auth, out var validationError))
-            {
-                return Results.BadRequest(new { error = validationError });
-            }
-
-            await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
-
-            var reset = await FindPasswordResetForUpdateAsync(db, token, cancellationToken);
-            if (reset is null || !reset.IsRedeemable(DateTime.UtcNow))
-            {
-                return Error(StatusCodes.Status400BadRequest, InvalidResetToken);
-            }
-
-            var user = await db.Users.SingleOrDefaultAsync(u => u.Id == reset.UserId, cancellationToken);
-            if (user is null)
-            {
-                // Unreachable while the FK cascades — the reset would have gone with the user. Answered
-                // as the same flat 400 rather than a 500, because from the caller's side an account that
-                // no longer exists and a token that never did are the same dead end.
-                return Error(StatusCodes.Status400BadRequest, InvalidResetToken);
-            }
-
-            var now = DateTime.UtcNow;
-            user.PasswordHash = passwords.Hash(request.NewPassword ?? string.Empty);
-            user.SecurityStamp = Guid.NewGuid().ToString();
-            user.FailedLoginCount = 0;
-            user.LockoutEndUtc = null;
-            user.UpdatedAt = now;
-            reset.RedeemedAtUtc = now;
-
-            await db.SaveChangesAsync(cancellationToken);
-            await transaction.CommitAsync(cancellationToken);
-
-            // After the commit, never before: evicting first would only let a request already in flight
-            // re-cache the stamp this call just replaced.
-            await TokenRevocation.EvictUserAsync(db, cache, user.Id, cancellationToken);
-
-            return Results.NoContent();
+                PasswordResetRedemption.Redeemed => Results.NoContent(),
+                PasswordResetRedemption.MissingToken => Results.BadRequest(
+                    new { error = "A request body with a reset token and a new password is required." }),
+                PasswordResetRedemption.InvalidPassword { Error: var error } =>
+                    Results.BadRequest(new { error }),
+                _ => Error(StatusCodes.Status400BadRequest, InvalidResetToken),
+            };
         }).AllowAnonymous().RequireRateLimiting(RateLimitPolicy);
 
     private const string DuplicateEmail = "An account with that email already exists.";
 
     /// <summary>
-    /// One message for every way a reset token can fail. See <c>MapResetPassword</c> for why the three
-    /// causes are not distinguished.
+    /// One message for every way a reset token can fail. See <see cref="PasswordResetService.RedeemAsync"/>
+    /// for why the three causes are not distinguished.
     /// </summary>
     private const string InvalidResetToken =
         "That reset link is not valid. It may have expired or already been used — ask for a new one.";
 
     /// <summary>
-    /// The reset matching <paramref name="token"/>, locked for the rest of the caller's transaction.
-    /// Same pattern, and same reasoning, as <see cref="FindInviteForUpdateAsync"/>: without the lock two
-    /// requests presenting one token both read it unredeemed and both succeed.
+    /// The status code and body for every way registration or claim can refuse. See
+    /// <see cref="RegistrationService"/> for why each refusal is as frank, or as flat, as it is.
     /// </summary>
-    private static async Task<PasswordReset?> FindPasswordResetForUpdateAsync(
-        WorkLedgerDbContext db, string token, CancellationToken cancellationToken)
+    private static IResult RegistrationFailure(RegistrationResult result) => result switch
     {
-        var hash = SingleUseToken.Hash(token);
-        var resets = await db.PasswordResets
-            .FromSql($"""SELECT * FROM "PasswordResets" WHERE "TokenHash" = {hash} FOR UPDATE""")
-            .ToListAsync(cancellationToken);
-        return resets.SingleOrDefault();
-    }
-
-    /// <summary>
-    /// The invite matching <paramref name="token"/>, locked for the rest of the caller's transaction, or
-    /// null if there is no such invite.
-    /// <para>
-    /// <b><c>FOR UPDATE</c> is what makes redemption single-use under concurrency.</b> Two registrations
-    /// presenting the same token would otherwise both read it unredeemed and both succeed, creating two
-    /// accounts from one invite. With the lock the second blocks until the first commits, and Postgres
-    /// re-evaluates the row once it is granted, so it sees the stamp and answers <c>409</c>.
-    /// </para>
-    /// <para>
-    /// Matched on the hash, never on the token: the column holds only <c>SingleUseToken.Hash</c> output,
-    /// so this is an indexed equality on a digest and the raw value never reaches a query. Not composed
-    /// with further LINQ, for the reason <c>AdminEndpoints</c> gives — EF would wrap it in a subquery and
-    /// <c>FOR UPDATE</c> has to stay on the outer statement.
-    /// </para>
-    /// </summary>
-    private static async Task<Invite?> FindInviteForUpdateAsync(
-        WorkLedgerDbContext db, string token, CancellationToken cancellationToken)
-    {
-        var hash = SingleUseToken.Hash(token);
-        var invites = await db.Invites
-            .FromSql($"""SELECT * FROM "Invites" WHERE "TokenHash" = {hash} FOR UPDATE""")
-            .ToListAsync(cancellationToken);
-        return invites.SingleOrDefault();
-    }
+        RegistrationResult.Invalid { Error: var error } => Results.BadRequest(new { error }),
+        RegistrationResult.Refused { Reason: var reason } => reason switch
+        {
+            RegistrationRefusal.Disabled =>
+                Error(StatusCodes.Status403Forbidden, "Registration is disabled on this server."),
+            RegistrationRefusal.InviteUsed =>
+                Error(StatusCodes.Status409Conflict, "That invite has already been used."),
+            RegistrationRefusal.InviteExpired =>
+                Error(StatusCodes.Status409Conflict, "That invite has expired. Ask for a new one."),
+            RegistrationRefusal.InviteEmailMismatch =>
+                Error(StatusCodes.Status409Conflict, "That invite was issued for a different email address."),
+            RegistrationRefusal.DuplicateEmail =>
+                Error(StatusCodes.Status409Conflict, DuplicateEmail),
+            RegistrationRefusal.NothingToClaim => Error(
+                StatusCodes.Status409Conflict,
+                "Nothing to claim. This server has no unclaimed account — use POST /auth/register instead."),
+            _ => Results.Unauthorized(),
+        },
+        _ => throw new InvalidOperationException($"Not a registration failure: {result}."),
+    };
 
     /// <summary>
     /// Creates the device row or refreshes the existing one, matching on <c>(UserId, DeviceId)</c> — the
     /// unique index — so repeated logins from one install are idempotent. A blank label leaves whatever
     /// label the device already had; <c>LastSeenUtc</c> is always bumped. Carried over verbatim from
-    /// <c>/auth/register-device</c>. Not saved here: the caller commits it with the user's counters.
+    /// <c>/auth/register-device</c>. Not saved here: the caller commits it.
     /// </summary>
     private static async Task<Device> UpsertDeviceAsync(
         WorkLedgerDbContext db,
@@ -756,20 +415,10 @@ public static class AuthEndpoints
         Results.Json(new { error = message }, statusCode: statusCode);
 
     /// <summary>
-    /// The only unique index on <c>Users</c> is the partial one on <c>NormalizedEmail</c>, so a unique
-    /// violation from a user insert can only be a duplicate email. Matching on the SqlState rather than
-    /// on the message keeps this independent of Postgres's error wording and of the locale it renders in.
+    /// The value of <c>X-Bootstrap-Secret</c>, or null when the header is absent. Compared by
+    /// <see cref="BootstrapOptions.SecretMatches"/>, never here. Internal so <see cref="AdminEndpoints"/>
+    /// reads it from the same header the same way.
     /// </summary>
-    private static bool IsUniqueViolation(DbUpdateException exception) =>
-        exception.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation };
-
-    /// <summary>
-    /// Constant-time comparison, exactly as S2's <c>/auth/register-device</c> did it: a byte-by-byte
-    /// early-exit compare would leak the secret's prefix to a caller willing to time enough requests.
-    /// </summary>
-    private static bool SecretMatches(HttpRequest httpRequest, BootstrapOptions bootstrap) =>
-        httpRequest.Headers.TryGetValue("X-Bootstrap-Secret", out var provided) &&
-        CryptographicOperations.FixedTimeEquals(
-            Encoding.UTF8.GetBytes(provided.ToString()),
-            Encoding.UTF8.GetBytes(bootstrap.Secret));
+    internal static string? ProvidedSecret(HttpRequest httpRequest) =>
+        httpRequest.Headers.TryGetValue("X-Bootstrap-Secret", out var provided) ? provided.ToString() : null;
 }

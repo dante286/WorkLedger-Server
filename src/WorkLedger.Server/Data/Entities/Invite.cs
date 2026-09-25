@@ -24,9 +24,8 @@ namespace WorkLedger.Server.Data.Entities;
 /// <b>Both user references are nullable, with <c>ON DELETE SET NULL</c>, and that is deliberate.</b> An
 /// invite outlives the accounts at either end of it: deleting the admin who issued one must not silently
 /// destroy the record of an account that still exists, and deleting the invited user must not either.
-/// Cascading would do exactly that, and adding this table to the account-deletion pipelines in
-/// <c>AccountEndpoints</c>/<c>AdminEndpoints</c> would mean the same loss by hand. So those pipelines
-/// need no change at all — the constraint does the right thing on its own, and a null here reads as
+/// Cascading would do exactly that, and adding this table to the account-deletion pipeline in
+/// <c>AccountDeletion</c> would mean the same loss by hand. So that pipeline needs no change at all — the constraint does the right thing on its own, and a null here reads as
 /// "that account is gone", not as data corruption.
 /// </para>
 /// </summary>

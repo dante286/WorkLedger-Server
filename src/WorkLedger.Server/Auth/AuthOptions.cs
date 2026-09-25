@@ -89,7 +89,7 @@ public sealed record AuthOptions(
     /// How long a lockout lasts, as the <see cref="TimeSpan"/> the endpoint actually computes with.
     /// <para>
     /// <b>Why <see cref="LockoutMinutes"/> binds as a fraction.</b> Two of the three counter rules
-    /// (see <c>AuthEndpoints</c>' login doc) can only be proven by a test that lives through a whole
+    /// (see <see cref="CredentialCheck"/>) can only be proven by a test that lives through a whole
     /// lockout window and submits another attempt on the far side of it. Bound as an <c>int</c>, the
     /// smallest useful value would be a whole minute, and the suite would either wait that out or fake
     /// the expiry by writing <c>LockoutEndUtc</c> directly — which exercises the reset path without

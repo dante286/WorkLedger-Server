@@ -28,8 +28,8 @@ namespace WorkLedger.Server.Data.Entities;
 /// <item><description>
 /// <see cref="UserId"/> <b>cascades</b>. A reset is meaningless once the account it resets is gone —
 /// there is nothing left to unlock and no audit value in "somebody who no longer exists was once sent a
-/// token". Cascading also means the account-deletion pipelines in <c>AccountEndpoints</c> and
-/// <c>AdminEndpoints</c> need no change: Postgres clears these rows itself.
+/// token". Cascading also means the account-deletion pipeline in <c>AccountDeletion</c> needs no change:
+/// Postgres clears these rows itself.
 /// </description></item>
 /// <item><description>
 /// <see cref="CreatedByUserId"/> is nullable and <b>sets null</b>, the same as <see cref="Invite"/>'s.

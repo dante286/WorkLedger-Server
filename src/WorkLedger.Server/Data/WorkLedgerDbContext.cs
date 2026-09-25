@@ -23,7 +23,7 @@ public sealed class WorkLedgerDbContext(DbContextOptions<WorkLedgerDbContext> op
             b.Property(x => x.LastLoginUtc).HasColumnType("timestamptz");
             b.Property(x => x.DisabledAtUtc).HasColumnType("timestamptz");
 
-            // Partial, covering exactly the set AdminEndpoints' last-admin guard counts and locks. On a
+            // Partial, covering exactly the set AdminOperations' last-admin guard counts and locks. On a
             // table this size an index is not about speed — it is that the guard's `FOR UPDATE` should
             // lock the two or three admin rows rather than take a predicate lock behind a sequential
             // scan of every user.
