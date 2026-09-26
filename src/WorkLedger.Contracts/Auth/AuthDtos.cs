@@ -127,6 +127,16 @@ public sealed record UserSummary(int Id, string Email, string? DisplayName, Date
 /// fraction of a minute so a real lockout window is waitable). Widening this field to a fractional type
 /// would put a test affordance on the wire; a client only ever needs "come back in about N minutes".
 /// </para>
+/// <para>
+/// <b><see cref="PortalUrl"/> is where this server's web portal lives, or null when it has none</b>
+/// (S11). Every account operation — registration, password changes and resets, devices, deletion —
+/// happens there, so a client that finds a value links to it instead of offering those screens itself,
+/// and one that finds null says the server is managed by its operator. It is an absolute URL built from
+/// the operator's configured public address, never from the request's <c>Host</c> header, so a client
+/// can open it as given rather than guessing at paths. Defaulted to null for the same reason as
+/// <see cref="RegistrationAcceptsInvite"/>: adding it leaves the positional constructor unchanged, and a
+/// server older than S11 simply omits it.
+/// </para>
 /// </summary>
 public sealed record AuthCapabilitiesResponse(
     bool RegistrationEnabled,
@@ -135,22 +145,5 @@ public sealed record AuthCapabilitiesResponse(
     bool HasUnclaimedAccount,
     int MaxFailedLogins,
     int LockoutMinutes,
-    bool RegistrationAcceptsInvite = false);
-
-/// <summary>
-/// The body of <c>POST /auth/password/reset</c>: a token an admin issued out of band, and the password
-/// its holder has chosen.
-/// <para>
-/// <b>No email, and no current password.</b> The token identifies the account by itself — asking for an
-/// address as well would add a second thing to get wrong without adding a second factor, since the
-/// token is already the whole credential. And the point of a reset is that the current password is what
-/// the person no longer has.
-/// </para>
-/// <para>
-/// The reply is <c>204</c> and carries <b>no token</b>. Tokens here are scoped to a <c>(user, device)</c>
-/// pair and this call names no device; every device signs in again, which is the correct outcome for a
-/// credential that had been lost. That is the deliberate difference from <c>POST /auth/password</c>,
-/// which re-mints for the calling device because the caller was already signed in on it.
-/// </para>
-/// </summary>
-public sealed record ResetPasswordRequest(string ResetToken, string NewPassword);
+    bool RegistrationAcceptsInvite = false,
+    string? PortalUrl = null);

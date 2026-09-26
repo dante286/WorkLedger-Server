@@ -22,6 +22,20 @@ namespace WorkLedger.Server.Auth;
 /// self-scoped, which is what makes them safe to reason about in isolation. <c>GET /admin/users</c>
 /// reports device <i>counts</i>; no admin route lists another user's devices, or reads any of their data.
 /// </para>
+/// <para>
+/// <b>Every route in this file is a compatibility route (S11)</b>, as are <c>POST /auth/register</c>,
+/// <c>POST /auth/claim</c>, <c>POST /auth/password</c> and <c>POST /auth/password/reset</c> in
+/// <see cref="AuthEndpoints"/>. Account management moved to the web portal, which calls the same services
+/// these routes do; the desktop client (from client plan 12) does no account lifecycle and only signs in.
+/// These routes stay, unchanged, so client builds already in the field and operators' <c>curl</c>
+/// scripts keep working — and <b>no new behaviour lands on them</b>. A new account feature is built in
+/// the portal, over a service, and not mirrored here. They, and the contract records only they use
+/// (<c>RegisterUserRequest</c>, <c>ChangePasswordRequest</c>, <c>DeviceSummary</c>,
+/// <c>DeleteAccountRequest</c>), go at the next deliberately wire-breaking release, not before.
+/// <c>POST /auth/login</c>, <c>GET /auth/capabilities</c> and <c>GET /auth/whoami</c> are not on this
+/// list: they are what the client still speaks. Nor is <see cref="AdminEndpoints"/>, which remains the
+/// operators' scripting interface beside the portal.
+/// </para>
 /// </summary>
 public static class AccountEndpoints
 {
@@ -41,6 +55,10 @@ public static class AccountEndpoints
     /// The devices signed in to this account, from <see cref="AccountSelfService.ListDevicesAsync"/>, with
     /// the calling device marked <see cref="DeviceSummary.IsCurrent"/> so a client can render a "where am
     /// I signed in" screen.
+    /// <para>
+    /// <b>A compatibility route (S11).</b> It keeps working unchanged, and <b>no new behaviour lands on
+    /// it</b>: see <see cref="AccountEndpoints"/>.
+    /// </para>
     /// </summary>
     private static void MapListDevices(WebApplication app) =>
         app.MapGet("/auth/devices", async (
@@ -59,6 +77,10 @@ public static class AccountEndpoints
     /// device is allowed</b> and means "sign this device out" — both explained on the service. For the
     /// latter the response is still a <c>204</c>; the caller's very next request is a <c>401</c>, and the
     /// device re-enrolls through <c>POST /auth/login</c>.
+    /// </para>
+    /// <para>
+    /// <b>A compatibility route (S11).</b> It keeps working unchanged, and <b>no new behaviour lands on
+    /// it</b>: see <see cref="AccountEndpoints"/>.
     /// </para>
     /// </summary>
     private static void MapDeleteDevice(WebApplication app) =>
@@ -79,6 +101,10 @@ public static class AccountEndpoints
     /// <b>A fresh token for the calling device comes back with the <c>200</c></b>, the same way
     /// <c>POST /auth/password</c> does it, because the stamp bump kills the caller's own token too and
     /// "log out my other devices" that logs you out as well reads as a bug.
+    /// </para>
+    /// <para>
+    /// <b>A compatibility route (S11).</b> It keeps working unchanged, and <b>no new behaviour lands on
+    /// it</b>: see <see cref="AccountEndpoints"/>.
     /// </para>
     /// </summary>
     private static void MapLogoutAll(WebApplication app) =>
@@ -120,6 +146,10 @@ public static class AccountEndpoints
     /// <para>
     /// <b>There is deliberately no last-administrator guard here</b>; the service explains why, and why
     /// adding one would be a bug.
+    /// </para>
+    /// <para>
+    /// <b>A compatibility route (S11).</b> It keeps working unchanged, and <b>no new behaviour lands on
+    /// it</b>: see <see cref="AccountEndpoints"/>.
     /// </para>
     /// </summary>
     private static void MapDeleteAccount(WebApplication app) =>
