@@ -31,8 +31,8 @@ only at `WorkLedger.Contracts` (see S0).
 | — | [S9-client-handoff.md](S9-client-handoff.md) | WL-131 → client epic WL-105 | S9 |
 | S10 | [S10-multi-user-operations.md](S10-multi-user-operations.md) | WL-150 (WL-151…WL-155, subtasks WL-156…WL-172) (done) | S9 |
 | — | [S10-client-handoff.md](S10-client-handoff.md) | WL-172 (step 0 superseded by S11's handoff) | S10 |
-| S11 | [S11-web-portal.md](S11-web-portal.md) | WL-179 (WL-180…WL-185, subtasks WL-186…WL-208) | S10 |
-| — | `S11-client-handoff.md` (written by S11 group F) | WL-208 → client plan 12 (WL-173) | S11 |
+| S11 | [S11-web-portal.md](S11-web-portal.md) | WL-179 (WL-180…WL-185, subtasks WL-186…WL-208) (done) | S10 |
+| — | [S11-client-handoff.md](S11-client-handoff.md) | WL-208 → client plan 12 (WL-173); supersedes S10's step 0 | S11 |
 
 **S6–S9 are one release: user accounts.** S2 built auth for a single seeded account with devices enrolled by a
 shared secret, and named per-user accounts as the deferred follow-up. S6–S9 are that follow-up — a **user
@@ -106,6 +106,14 @@ and reset UI in the desktop app) before it was started.
 > **Build order for S11 is A → B → D → E → C → F**, not the lettering — see its Sequencing section. Group A
 > is a pure refactor (no test modified) and lands alone.
 
+**S11's handoff is the smallest yet, and it covers S10's too.** The client never re-vendored at S10's
+`1e343c8`, so [S11-client-handoff.md](S11-client-handoff.md) is the one pass for both releases. Because
+S11 moved the admin shapes out of the library rather than leaving them for the client to copy, the whole
+difference between the client's pin and the new one is **three trailing, defaulted parameters** on two
+records — S10's `RegisterUserRequest.InviteToken` and `AuthCapabilitiesResponse.RegistrationAcceptsInvite`,
+and S11's `AuthCapabilitiesResponse.PortalUrl`. `Sync/`, `Payloads/` and `Reports/` are byte-identical to
+the pin, audited.
+
 ## Cross-repo contract handoff (important)
 
 `WorkLedger.Contracts` is authored in **this** repo (S0). The client **consumes it today**: client Plan 6
@@ -123,7 +131,8 @@ it produces is [S9-client-handoff.md](S9-client-handoff.md) — the settled inve
 removed and changed, plus the list of client files that break. The re-vendor itself is client-repo work
 (WL-133), and it blocks the rest of client epic WL-105. **S10 then did the same thing again, cheaply:**
 four scope groups changed the contract, and [S10-client-handoff.md](S10-client-handoff.md) is the single
-pass at the end of them. **From S11 the library has a scope rule: `WorkLedger.Contracts` holds what the desktop client speaks,
+pass at the end of them, and [S11-client-handoff.md](S11-client-handoff.md) the pass after that, covering
+both. **From S11 the library has a scope rule: `WorkLedger.Contracts` holds what the desktop client speaks,
 and nothing else.** Shapes used only by server-side surfaces — the `/admin/*` JSON API, the portal — live in
 `WorkLedger.Server`. S11 applies it by moving `AdminDtos.cs` and `ResetPasswordRequest` out, which breaks no
 one because the client's pin (`3d27c86`) predates both; records the client *has* vendored stay until the next

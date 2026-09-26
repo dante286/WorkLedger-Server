@@ -13,6 +13,11 @@
     compose wiring, migrations-on-boot, and the fact that a token minted by the container is accepted
     by the container.
 
+    If the server advertises a web portal (S11: capabilities' portalUrl, set when Web__Enabled is on),
+    it checks the image serves the sign-in page with its Content-Security-Policy and its stylesheet;
+    with the portal off it checks /portal is not a route at all. The portal's flows are the test
+    suite's job.
+
     It then does the S10 multi-user leg IF IT CAN ADMINISTER THE TARGET: issue an invite, register a
     second account with that token and no shared secret, and assert the two accounts cannot see each
     other's rows. "If it can" is load-bearing -- on a fresh volume the throwaway account is the first
@@ -159,9 +164,10 @@ function Invoke-Api {
     $text = [string]$response.Content
     $isJson = $response.Headers.ContainsKey('Content-Type') -and ($response.Headers['Content-Type'] -match 'application/json')
     return @{
-        Status = [int]$response.StatusCode
-        Text   = $text
-        Body   = if (-not $RawText -and $isJson -and $text) { $text | ConvertFrom-Json } else { $null }
+        Status  = [int]$response.StatusCode
+        Headers = $response.Headers
+        Text    = $text
+        Body    = if (-not $RawText -and $isJson -and $text) { $text | ConvertFrom-Json } else { $null }
     }
 }
 
@@ -248,6 +254,31 @@ try {
         throw "Registration is disabled on $BaseUrl, so this script cannot create its throwaway account. Set REGISTRATIONS_ALLOWED=true (or point -BaseUrl at a deployment where it is on)."
     }
     Write-Host "      policy: minPasswordLength $minPasswordLength, lockout $($capabilities.Body.maxFailedLogins) failures / $($capabilities.Body.lockoutMinutes) min" -ForegroundColor DarkGray
+
+    # --- the web portal (S11), when the deployment has it switched on ----------------------------
+    # Only whether the image serves pages and their static assets: the portal's flows are covered by
+    # the test suite. Requested from $BaseUrl rather than the advertised address, because the two
+    # differ behind a TLS proxy and this script may be running on the box itself.
+    # A pre-S11 server omits the field entirely, and StrictMode throws on a missing property.
+    $portalProperty = $capabilities.Body.PSObject.Properties['portalUrl']
+    $portalUrl = if ($portalProperty) { $portalProperty.Value } else { $null }
+    if ($portalUrl) {
+        Start-Step "the web portal is on ($portalUrl) and serves its pages"
+        Confirm-That 'the advertised address ends in /portal' ($portalUrl -match '^https?://[^/]+(/.*)?/portal$') $portalUrl
+        $login = Invoke-Api -Path '/portal/login' -RawText
+        Confirm-That 'GET /portal/login is 200' ($login.Status -eq 200) "got $($login.Status)"
+        $csp = $login.Headers['Content-Security-Policy'] -join ''
+        Confirm-That 'it carries the portal Content-Security-Policy' `
+            (($csp -match "default-src 'self'") -and ($csp -match "frame-ancestors 'none'")) $csp
+        $css = Invoke-Api -Path '/portal/assets/portal.css' -RawText
+        Confirm-That 'its stylesheet is served anonymously' `
+            (($css.Status -eq 200) -and (($css.Headers['Content-Type'] -join '') -match 'text/css')) "got $($css.Status)"
+        $api = Invoke-Api -Path '/health'
+        Confirm-That 'JSON responses do not carry the portal headers' (-not $api.Headers.ContainsKey('Content-Security-Policy'))
+    } else {
+        Start-Step 'the web portal is off (Web__Enabled unset), so /portal is not a route'
+        Confirm-That 'GET /portal/login is not a page' ((Invoke-Api -Path '/portal/login' -RawText).Status -ne 200)
+    }
 
     # --- register a throwaway account ------------------------------------------------------------
     Start-Step 'registering a throwaway account'
