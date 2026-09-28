@@ -16,6 +16,14 @@ namespace WorkLedger.Server.Auth;
 /// made ordinary.
 /// </para>
 /// <para>
+/// <b>Not a compatibility route, and not superseded by the portal (S11).</b> <c>/portal/admin</c> is the
+/// operator's UI for the same operations, and it calls the same <see cref="AdminOperations"/> and
+/// <see cref="InviteService"/> methods these routes do — so the guards, the eviction and the audit line
+/// are one piece of code whichever surface is used. These routes remain the scripting interface and are
+/// documented in the README beside the portal. Their request and response shapes are server-internal
+/// (<c>Auth/AdminDtos.cs</c>), not part of <c>WorkLedger.Contracts</c>: the desktop client never calls them.
+/// </para>
+/// <para>
 /// <b>Authority comes from the database, not the token.</b> Every route here but
 /// <c>/admin/bootstrap</c> is <c>.RequireAuthorization(TokenRevocation.AdminPolicy)</c>, and that
 /// policy's claim is put on the principal by <see cref="TokenRevocation"/> from the <c>IsAdmin</c> column

@@ -146,6 +146,30 @@ public class PortalHostingTests(UserAccountsFixture fixture) : IAsyncLifetime
         }
     }
 
+    /// <summary>
+    /// S11 item 22: the client finds the portal from <c>/auth/capabilities</c>. The address is built from
+    /// <c>Web:PublicBaseUrl</c> — a forged <c>Host</c> header changes nothing — and is null while the
+    /// portal is off, and the seven fields from before S11 answer the same either way.
+    /// </summary>
+    [Fact]
+    public async Task Capabilities_AdvertiseThePortal_OnlyWhileItIsOn_FromThePublicBaseUrl()
+    {
+        using var off = fixture.CreateHost();
+        using var on = fixture.CreateHost(
+            ("Web:Enabled", "true"), ("Web:PublicBaseUrl", "https://ledger.example.test/"));
+
+        var withoutPortal = (await off.CreateClient()
+            .GetFromJsonAsync<AuthCapabilitiesResponse>("/auth/capabilities"))!;
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/auth/capabilities");
+        request.Headers.Host = "attacker.example";
+        var withPortal = (await (await on.CreateClient().SendAsync(request))
+            .Content.ReadFromJsonAsync<AuthCapabilitiesResponse>())!;
+
+        Assert.Null(withoutPortal.PortalUrl);
+        Assert.Equal("https://ledger.example.test/portal", withPortal.PortalUrl);
+        Assert.Equal(withoutPortal, withPortal with { PortalUrl = null });
+    }
+
     [Fact]
     public async Task PortalResponses_CarryTheHardeningHeaders_AndJsonResponsesDoNot()
     {

@@ -39,6 +39,13 @@ public sealed record WebOptions(bool Enabled, string? PublicBaseUrl, int Session
 
     public TimeSpan SessionLifetime => TimeSpan.FromHours(SessionHours);
 
+    /// <summary>
+    /// The portal's absolute address, as <c>GET /auth/capabilities</c> advertises it to the desktop
+    /// client, or null while the portal is off. Built from <see cref="PublicBaseUrl"/> for the reason
+    /// every absolute link is.
+    /// </summary>
+    public string? PortalUrl => Enabled ? $"{PublicBaseUrl}{PortalPath}" : null;
+
     public static WebOptions Resolve(IConfiguration configuration)
     {
         var enabledValue = Configured(configuration, "Web:Enabled");

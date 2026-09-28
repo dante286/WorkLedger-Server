@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using WorkLedger.Contracts.Auth;
 using WorkLedger.Server.Data;
 using WorkLedger.Server.Data.Entities;
+using WorkLedger.Server.Web;
 
 namespace WorkLedger.Server.Auth;
 
@@ -33,6 +34,11 @@ public static class AuthEndpoints
     /// <b>The secret arrives in <c>X-Bootstrap-Secret</c></b>, a header, so it never reaches the request
     /// log (see <c>Program.cs</c>). See <see cref="RegistrationService"/> for how its job has changed.
     /// </para>
+    /// <para>
+    /// <b>Registration, claim, password change and password reset are compatibility routes</b> (S11): the
+    /// web portal is where accounts are managed now, and these stay only so existing clients and scripts
+    /// keep working. See <see cref="AccountEndpoints"/> for the full list and the rule that comes with it.
+    /// </para>
     /// </summary>
     public static void MapAuthEndpoints(this WebApplication app)
     {
@@ -52,12 +58,14 @@ public static class AuthEndpoints
     /// the registration UI when registration is off, offer "Claim this server" while an unclaimed row
     /// exists, state the real password minimum, and warn before a login attempt that would lock the
     /// account. See <see cref="AuthCapabilitiesResponse"/> for why static policy is safe to serve
-    /// anonymously and why this is not a remaining-attempts count.
+    /// anonymously and why this is not a remaining-attempts count. Since S11 it is also how the client
+    /// finds the web portal.
     /// </summary>
     private static void MapCapabilities(WebApplication app) =>
         app.MapGet("/auth/capabilities", async (
             WorkLedgerDbContext db,
             AuthOptions auth,
+            WebOptions web,
             CancellationToken cancellationToken) =>
         {
             var unclaimed = await UnclaimedUser.FindAsync(db, cancellationToken);
@@ -73,7 +81,9 @@ public static class AuthEndpoints
                 LockoutMinutes: auth.ReportedLockoutMinutes,
                 // Not configurable: a server running this code always takes an invite. It is on the wire
                 // so a client can tell this server from an older one without version-sniffing.
-                RegistrationAcceptsInvite: true));
+                RegistrationAcceptsInvite: true,
+                // Null while the portal is off, so a client never links to pages that 404.
+                PortalUrl: web.PortalUrl));
         }).AllowAnonymous();
 
     /// <summary>
@@ -89,6 +99,10 @@ public static class AuthEndpoints
     /// <para>
     /// <b>No token in the response.</b> Tokens are device-scoped and minted by <c>/auth/login</c>;
     /// registration is a user-level act with no device to bind one to.
+    /// </para>
+    /// <para>
+    /// <b>A compatibility route (S11).</b> It keeps working unchanged, and <b>no new behaviour lands on
+    /// it</b>: see <see cref="AccountEndpoints"/>.
     /// </para>
     /// </summary>
     private static void MapRegister(WebApplication app) =>
@@ -112,6 +126,10 @@ public static class AuthEndpoints
     /// Claims the pre-S6 legacy row through <see cref="RegistrationService.ClaimAsync"/>: <c>200</c> +
     /// <see cref="UserSummary"/>, <c>401</c> for a bad secret, <c>400</c> for bad input, or <c>409</c> when
     /// there is nothing claimable.
+    /// <para>
+    /// <b>A compatibility route (S11).</b> It keeps working unchanged, and <b>no new behaviour lands on
+    /// it</b>: see <see cref="AccountEndpoints"/>.
+    /// </para>
     /// </summary>
     private static void MapClaim(WebApplication app) =>
         app.MapPost("/auth/claim", async (
@@ -197,6 +215,10 @@ public static class AuthEndpoints
     /// The stamp bump signs out every device <i>including the caller's own</i>, so the <c>200</c> carries
     /// a freshly minted token for the calling device: otherwise changing your password signs you out of
     /// the app you just changed it in, which reads as a bug.
+    /// </para>
+    /// <para>
+    /// <b>A compatibility route (S11).</b> It keeps working unchanged, and <b>no new behaviour lands on
+    /// it</b>: see <see cref="AccountEndpoints"/>.
     /// </para>
     /// </summary>
     private static void MapChangePassword(WebApplication app) =>
@@ -289,6 +311,10 @@ public static class AuthEndpoints
     /// <b>No token comes back, unlike <c>POST /auth/password</c>.</b> That one re-mints for the calling
     /// device because the caller was already signed in on it; here there is no device to mint for — the
     /// request names none.
+    /// </para>
+    /// <para>
+    /// <b>A compatibility route (S11).</b> It keeps working unchanged, and <b>no new behaviour lands on
+    /// it</b>: see <see cref="AccountEndpoints"/>.
     /// </para>
     /// </summary>
     private static void MapResetPassword(WebApplication app) =>

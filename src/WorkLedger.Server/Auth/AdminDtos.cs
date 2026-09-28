@@ -1,4 +1,12 @@
-namespace WorkLedger.Contracts.Auth;
+using WorkLedger.Contracts.Auth;
+
+namespace WorkLedger.Server.Auth;
+
+// The admin JSON API's shapes, and the body of POST /auth/password/reset. They lived in
+// WorkLedger.Contracts until S11 and moved here because that library holds what the desktop client
+// speaks and nothing else: the client never calls /admin/* or /auth/password/reset, and its vendored
+// copy (pinned at 3d27c86) predates every record in this file, so the move broke no one. See
+// plans/S11-client-handoff.md.
 
 /// <summary>
 /// One row of <c>GET /admin/users</c> — every user on the deployment, as an operator's management
@@ -101,3 +109,21 @@ public sealed record InviteSummary(
 /// </para>
 /// </summary>
 public sealed record PasswordResetTokenResponse(string Token, DateTime ExpiresAtUtc);
+
+/// <summary>
+/// The body of <c>POST /auth/password/reset</c>: a token an admin issued out of band, and the password
+/// its holder has chosen.
+/// <para>
+/// <b>No email, and no current password.</b> The token identifies the account by itself — asking for an
+/// address as well would add a second thing to get wrong without adding a second factor, since the
+/// token is already the whole credential. And the point of a reset is that the current password is what
+/// the person no longer has.
+/// </para>
+/// <para>
+/// The reply is <c>204</c> and carries <b>no token</b>. Tokens here are scoped to a <c>(user, device)</c>
+/// pair and this call names no device; every device signs in again, which is the correct outcome for a
+/// credential that had been lost. That is the deliberate difference from <c>POST /auth/password</c>,
+/// which re-mints for the calling device because the caller was already signed in on it.
+/// </para>
+/// </summary>
+public sealed record ResetPasswordRequest(string ResetToken, string NewPassword);

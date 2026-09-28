@@ -5,14 +5,17 @@ copy of a user's projects, tasks and time entries, reconciles the changes each d
 computes the cross-device rollups no single device can. Self-hosted by design — one `docker compose up`
 on a homelab box or a small VPS, with your data in a Postgres volume you own and back up.
 
-C# / ASP.NET Core Minimal APIs on .NET 10, EF Core + Npgsql → PostgreSQL, JWT bearer auth, xUnit +
-Testcontainers.
+It can also serve a small **web portal** from the same process, which is where accounts are created
+and managed — the desktop client works offline on its own, and against a server it only signs in.
+
+C# / ASP.NET Core Minimal APIs and Razor Pages on .NET 10, EF Core + Npgsql → PostgreSQL, JWT bearer
+auth for the API, a cookie session for the portal, xUnit + Testcontainers.
 
 - **Deploying it** → [Quickstart](#quickstart-self-hosted-with-docker-compose), then
   [Configuration](#configuration) and [Operations](#operations).
-- **Working on it** → [Development](#development). The design record is `plans/` (S0–S10) and
+- **Working on it** → [Development](#development). The design record is `plans/` (S0–S11) and
   `plans/README.md`.
-- **Running it for a team** →
+- **Running it for a team** → [The web portal](#the-web-portal), then
   [Running this for more than one person](#running-this-for-more-than-one-person).
 - **Coming from a pre-user-accounts install** →
   [Upgrading from a pre-user-accounts deployment](#upgrading-from-a-pre-user-accounts-deployment).
@@ -23,31 +26,41 @@ Three projects (`WorkLedger-Server.slnx`), no controllers — everything is wire
 
 | Project | What it is |
 |---|---|
-| `src/WorkLedger.Server` | The API. Minimal API endpoints, EF Core + Npgsql, JWT bearer auth, `Sync/` (push/pull reconciliation) and `Reports/` (read-only rollups). |
-| `src/WorkLedger.Contracts` | Dependency-free class library: the wire DTOs. No ASP.NET or EF references, because the client compiles these same files (see [Cross-repo](#cross-repo-the-contract-is-vendored)). |
+| `src/WorkLedger.Server` | The API and the portal. Minimal API endpoints, EF Core + Npgsql, JWT bearer auth, `Sync/` (push/pull reconciliation), `Reports/` (read-only rollups), `Auth/` (the account rules, as services both surfaces call), and `Pages/` + `Web/` (the Razor Pages portal under `/portal`). |
+| `src/WorkLedger.Contracts` | Dependency-free class library: the wire DTOs **the desktop client speaks, and nothing else**. No ASP.NET or EF references, because the client compiles these same files (see [Cross-repo](#cross-repo-the-contract-is-vendored)). The admin API's shapes are server-internal. |
 | `tests/WorkLedger.Server.Tests` | xUnit. `WebApplicationFactory<Program>` plus `Testcontainers.PostgreSql`, so the data, auth, sync and report tests each run against a real throwaway Postgres. |
 
-Two properties shape everything else:
+Three properties shape everything else:
 
 - **Every endpoint is authenticated by default.** `Program.cs` installs an authorization
   `FallbackPolicy` requiring an authenticated user, so an endpoint is protected unless it explicitly
   opts out with `.AllowAnonymous()` — only `/`, `/health` and the five endpoints a caller with no token
   needs (`/auth/capabilities`, `/auth/register`, `/auth/claim`, `/auth/login`, `/auth/password/reset`)
-  do. Adding an endpoint cannot accidentally leave it open.
-- **Scope always comes from the token.** `ICurrentContext` reads `user_id`/`device_id` out of the
-  JWT claims, and every sync and report query filters on that user. Nothing in a request body or URL
-  can widen it. Ids in routes and payloads are cross-device `SyncId` Guids, never the server's internal
-  int ids, so an id belonging to another user is simply a 404.
+  do. Adding an endpoint cannot accidentally leave it open. Portal pages each carry a portal policy or
+  an explicit anonymous marker; a page with neither falls to that same bearer-only fallback and fails
+  closed.
+- **Scope always comes from the credential.** `ICurrentContext` reads `user_id`/`device_id` out of the
+  JWT claims, and every sync and report query filters on that user; portal pages scope on the session
+  cookie's `user_id` the same way. Nothing in a request body or URL can widen it. Ids in routes and
+  payloads are cross-device `SyncId` Guids, never the server's internal int ids, so an id belonging to
+  another user is simply a 404.
+- **Two authentication schemes, never merged.** The JSON API accepts bearer tokens only and the portal
+  accepts its cookie only. A cookie that could reach `/sync/*` or `/admin/*` would expose the JSON API
+  to cross-site request forgery; a token that could reach a portal page would skip the portal's
+  antiforgery and session rules.
 
 A **user account is the top of the tenancy tree**: one `User` row owns many `Device` rows, and every
 device syncs the same projects, tasks and time entries back under that user. **Credentials are
 user-level; tokens are device-level** — a person signs in *from a device*, and what comes back is a JWT
-scoped to that `(user, device)` pair. Registration is gated on the `Bootstrap__Secret` signup secret
-**or** a single-use invite, and can be switched off entirely with `REGISTRATIONS_ALLOWED=false`. A
-deployment with more than one person on it also gets an operator surface under `/admin/*`, gated on a
-flag read from the database on every request rather than carried in a token.
+scoped to that `(user, device)` pair. A browser signed in to the portal holds neither: it gets a
+short, user-level session and creates no device. Registration is gated on the `Bootstrap__Secret`
+signup secret **or** a single-use invite, and can be switched off entirely with
+`REGISTRATIONS_ALLOWED=false`. A deployment with more than one person on it also gets an operator
+surface — the portal's Administration pages, and `/admin/*` for scripts — gated on a flag read from the
+database on every request rather than carried in a token.
 
-Nothing is seeded. A fresh database has zero users; the first `POST /auth/register` creates one.
+Nothing is seeded. A fresh database has zero users; the first account created — through
+`/portal/setup` or `POST /auth/register` — is the first user, and its administrator.
 
 ## Quickstart: self-hosted with Docker Compose
 
@@ -58,7 +71,7 @@ cp .env.example .env
 
 # Fill in the three required secrets. On Linux/macOS:
 #   Jwt__SigningKey    — at least 32 bytes; signs device tokens
-#   Bootstrap__Secret  — the operator credential (/auth/register, /auth/claim, /admin/bootstrap)
+#   Bootstrap__Secret  — the operator credential (/portal/setup; /auth/register, /auth/claim, /admin/bootstrap)
 #   POSTGRES_PASSWORD  — the bundled database's password (set it before the first boot)
 openssl rand -base64 48   # once per secret
 $EDITOR .env
@@ -80,10 +93,82 @@ If the API container exits instead, `docker compose logs api` names the configur
 — it refuses to start on a missing signing key, bootstrap secret or database rather than serving
 half-configured. Compose itself refuses the `up` if a required variable is absent from `.env`.
 
-### First run: create an account, then sign in from each device
+### The web portal
+
+The server can serve a small set of plain HTML pages under `/portal`, and **that is where accounts are
+made and managed**: first-run setup, signing up from an invite link, redeeming a password-reset link,
+a person's own devices, password and account deletion, and an administrator's users and invites. The
+desktop client works fully offline on its own and, pointed at a server, only signs in — it does no
+account lifecycle. So any deployment with a second person on it, or anyone who would rather not drive
+`curl`, wants the portal on.
+
+It is **off by default, and off means absent**: no page, no cookie, no new route, so upgrading changes
+nothing until you opt in. To turn it on:
+
+```dotenv
+# .env
+Web__Enabled=true
+Web__PublicBaseUrl=https://ledger.example.com    # the address browsers reach this server at
+```
+
+`Web__PublicBaseUrl` is **required** once the portal is on — the container refuses to start without
+it, naming the key — and must be the `https://` address your TLS proxy serves (see
+[Putting it behind TLS](#putting-it-behind-tls)); only a `localhost` address may be `http://`, because
+the session cookie is `Secure` and a browser will not send it back over plain http anywhere else. It
+is the **only** thing invite and reset links are built from, never the request's `Host` header, which
+the caller controls. It is also what `GET /auth/capabilities` hands the desktop client as `portalUrl`,
+so the app can send people to the right page instead of guessing at paths. `Web__SessionHours` (8 by
+default, sliding) is how long a portal session lasts; there is deliberately no "remember me".
+
+**The portal and the sync API share one origin and one process, and that is deliberate.** Every
+revocation — a password change, signing out everywhere, a suspension, a demotion, a deletion — evicts
+the in-memory revocation cache of the process that made it, which is what makes it bite on the very
+next request rather than up to `Auth__StampCacheSeconds` later. A portal running as a separate service
+would revoke without evicting the API's cache, and every revocation would quietly go back to lagging.
+So there is nothing extra to deploy: same container, same port, same proxy route. A browser that asks
+for `/` is sent to `/portal`; everything else asking for `/` still gets the JSON name and version.
+
+Two consequences worth knowing:
+
+- **A browser never holds a device token.** Signing in to the portal gives a short, user-level session
+  cookie and creates no device, so it never appears in anyone's device list. The session is checked
+  against the same user row as a token on every request, so a password change, signing out
+  everywhere, a suspension or a deletion ends it at once too. Signing out of the portal signs out only
+  that browser — never your desktop installs.
+- **The two credentials never cross.** Every JSON route refuses the portal cookie and every portal page
+  refuses a bearer token. The portal's forms all carry antiforgery tokens; the JSON API, which has
+  none, is never reachable with a cookie, so the portal adds no cross-site-request-forgery exposure to
+  it.
+
+Its data-protection keys, which encrypt the session cookie and the antiforgery tokens, are kept in
+Postgres (`DataProtectionKeys`) rather than the container's filesystem, so a restart or an image
+upgrade does not sign anyone out. They sit unencrypted in that table, which is acceptable for the
+same reason the table is where it is: anyone who can read it can already read every user row. Your
+dumps carry them.
+
+### First run
+
+**With the portal on**, open the server in a browser and go to **`/portal/setup`**. On an empty
+database it offers exactly one thing: **create the first account**, which is the administrator. It asks
+for `Bootstrap__Secret` — every step on that page does, because the first person to find a fresh server
+would otherwise own it — and signs you straight in. Then install the desktop app, give it the server
+address the portal shows you, and sign in with the same email and password; each install enrols
+itself as a device the first time it signs in.
+
+`/portal/setup` knows the server's state and offers only the step that state allows: create the first
+account on an empty database; **claim** the data of a pre-user-accounts install (see
+[Upgrading from a pre-user-accounts deployment](#upgrading-from-a-pre-user-accounts-deployment)); or,
+when there are users but no administrator, let one of them sign in and promote themselves. Once an
+administrator exists the page is a `404`, so it does not advertise a secret prompt on a running
+server.
+
+#### Without the portal, or from a script
 
 Two steps, and they are different kinds of thing. **Registration is a user-level act** gated by the
-signup secret, done once. **Signing in is per device** and is the only source of a token.
+signup secret, done once. **Signing in is per device** and is the only source of a token. (These account
+routes are *compatibility routes* since the portal arrived: they keep working exactly as they did, for
+desktop builds already in the field and for your scripts, but new account features land in the portal
+only.)
 
 Ask the server what its rules are first — a client is expected to do this, and it costs nothing:
 
@@ -91,8 +176,10 @@ Ask the server what its rules are first — a client is expected to do this, and
 curl http://localhost:8080/auth/capabilities
 # {"registrationEnabled":true,"registrationRequiresSecret":true,"minPasswordLength":12,
 #  "hasUnclaimedAccount":false,"maxFailedLogins":5,"lockoutMinutes":15,
-#  "registrationAcceptsInvite":true}
+#  "registrationAcceptsInvite":true,"portalUrl":null}
 ```
+
+`portalUrl` is `https://<Web__PublicBaseUrl>/portal` while the portal is on, and `null` while it is off.
 
 Create the account. The secret goes in the `X-Bootstrap-Secret` header; nothing else on the API reads
 it:
@@ -135,45 +222,33 @@ It unlocks itself; nothing needs doing.
 ### Running this for more than one person
 
 Everything above still describes a one-person server, and nothing below changes it: a deployment that
-never calls an `/admin/*` route behaves exactly as it did before. What follows is for when a second
-person needs an account.
+never opens the portal's Administration pages or calls an `/admin/*` route behaves exactly as it did
+before. What follows is for when a second person needs an account. It assumes
+[the web portal](#the-web-portal) is on; every step also has a `curl` form, at the end.
 
-**The first account on an empty database is an administrator.** No step, no flag — if you followed
-First run, you already have one. A deployment that predates this release has users but no admins, so
-promote yourself once, from a device you are already signed in on:
+**The first account on an empty database is an administrator.** No step, no flag — if you went through
+`/portal/setup`, you already are one. A deployment that predates the operator surface has users but no
+admins: open `/portal/setup`, which in that state offers **sign in and promote yourself**, gated on
+`Bootstrap__Secret` as well as your password. It refuses once *any* admin exists, so it cannot be used
+a second time to grant yourself somebody else's server.
 
-```bash
-# Both credentials: the token says who you are, the secret says you are the operator.
-curl -X POST http://localhost:8080/admin/bootstrap \
-  -H "Authorization: Bearer $token" \
-  -H "X-Bootstrap-Secret: $Bootstrap__Secret"
-# 204
-```
+**Onboard people with invite links, not the signup secret.** In the portal, **Administration →
+Invites → Create invite link**. Optionally bind it to one address, shorten or lengthen its life
+(`Auth__InviteExpiryDays` by default), and leave yourself a note. The page shows a link —
+`https://ledger.example.com/portal/register#invite=…` — **once**: the server keeps only a SHA-256 of
+the token, so it is never recoverable afterwards. Send it however you talk to them. It opens a sign-up
+form with the invite already filled in; they choose their own password, land signed in to the portal,
+and are shown the server address to paste into the desktop app.
 
-It answers `409` once *any* admin exists, so it cannot be used a second time to grant yourself
-somebody else's server.
-
-**Onboard people with invites rather than the signup secret.** An invite is single-use, expires, can be
-bound to one address, is revocable, and leaves a record of who issued it. The secret is none of those
-things — handing it over makes someone a permanent signup credential.
-
-```bash
-# The token comes back HERE AND NOWHERE ELSE. The server keeps only a SHA-256 of it.
-curl -X POST http://localhost:8080/admin/invites \
-  -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
-  -d '{"email":"alex@example.com","note":"new starter"}'
-# 201 {"token":"y1Qk...","invite":{"id":1,"email":"ALEX@EXAMPLE.COM","expiresAtUtc":"2026-...",...}}
-```
-
-Send them that token however you would have sent the secret. They register with it in the body, and no
-header at all:
-
-```bash
-curl -X POST http://localhost:8080/auth/register \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"alex@example.com","password":"correct-horse-battery","inviteToken":"y1Qk..."}'
-# 201 — then POST /auth/login from each of their devices, exactly as above.
-```
+- **Opening the link spends nothing.** Chat and mail apps fetch links to build previews; only submitting
+  the form redeems the invite, and it works once. A sign-up that fails — the address is already taken,
+  say — leaves the invite unspent.
+- **The token rides after the `#`**, which a browser never sends to a server, so it cannot reach this
+  server's request log, your proxy's access log or a `Referer`. If the link gets mangled on the way, the
+  form has a field to paste the code into.
+- An invite is single-use, expires, can be bound to one address, can be revoked from the same page
+  until it is used, and leaves a record of who issued it. The secret is none of those things — handing
+  it over makes someone a permanent signup credential.
 
 Then **close the secret path**, which is the point of the exercise rather than an optional extra:
 
@@ -182,49 +257,84 @@ Then **close the secret path**, which is the point of the exercise rather than a
 Auth__SignupSecretEnabled=false
 ```
 
-`/auth/capabilities` advertises both switches, so a client asks for a token instead of showing a secret
-field it knows will be refused. The secret keeps its other two jobs — `POST /auth/claim` and
-`POST /admin/bootstrap` — and `REGISTRATIONS_ALLOWED=false` still closes registration outright,
-invites included.
+`/auth/capabilities` advertises both switches. The secret keeps its other jobs — `/portal/setup`,
+`POST /auth/claim` and `POST /admin/bootstrap` — and `REGISTRATIONS_ALLOWED=false` still closes
+registration outright, invites included (the sign-up page then says registration is closed).
 
-**Day-to-day operations** are `GET /admin/users` and the routes beside it: unlock someone who locked
-themselves out, suspend an account without destroying it, promote a second administrator, delete a
-leaver. See the [admin table](#endpoints) for what each returns. Two rules are worth knowing before you
-need them:
+**Day-to-day operations** are **Administration → Users**: unlock someone who locked themselves out,
+suspend an account without destroying it (and restore it), make someone a second administrator, issue a
+password-reset link, or delete a leaver — typing their email to confirm which account. Every button runs
+exactly the code the matching `/admin/*` route runs, with the same guards and the same audit line. Two
+rules are worth knowing before you need them:
 
-- **You cannot suspend or delete your own account from `/admin/*`**, and you cannot leave the server
-  with no administrator. Demoting yourself *is* allowed once somebody else can administer — that is how
-  an operator hands over.
-- **Admin status is read from the database on every request**, never from the token. A demotion, a
-  suspension or a deletion takes effect on that person's very next request, not when their year-long
-  token eventually expires.
+- **You cannot suspend or delete your own account from the Users page**, and you cannot leave the
+  server with no administrator; the page says why when it refuses. Stepping down *is* allowed once
+  somebody else can administer — that is how an operator hands over, and the page then sends you back
+  to your own account, because the Administration pages will no longer let you in.
+- **Admin status is read from the database on every request**, never from a token or the session
+  cookie. A demotion, a suspension or a deletion takes effect on that person's very next request — in
+  the portal and on every desktop install — not when some credential eventually expires.
 
-**A forgotten password** is now an admin action rather than a `psql` session. Issue a single-use token
-and hand it over; they choose the new password themselves and you never see it:
+**A forgotten password** is an admin action rather than a `psql` session. **Users → Password reset
+link** shows a single-use link, `…/portal/reset#token=…`, once, with its expiry
+(`Auth__PasswordResetExpiryHours`). Hand it over; they choose the new password on that page and you
+never see it. Every one of their devices is signed out and signs in again, a lockout is cleared, and
+the page does *not* sign them in — the link proves they hold the link; the next sign-in proves the
+password. It dies on first use, and issuing a second one kills the first. An unknown, expired or
+already-spent link all get the same message. **No email is sent** by any of this: the server has no
+mail, so passing links on is yours to do, and there is still no self-service "forgot my password".
+
+Everyone, administrator or not, manages their own account in the portal too: the devices signed in to
+it (removing one signs that install out and deletes none of its data), their password, signing out
+everywhere, and deleting the account and everything in it.
+
+If nobody can administer the server at all, the `psql` recovery in
+[Recovering a lost password](#recovering-a-lost-password) is still there.
+
+#### From a script: the `/admin/*` routes
+
+The portal is a front end over the same operations, not a replacement for them: `/admin/*` stays the
+scripting interface, documented in the [operator table](#endpoints), and is not deprecated. The same
+flow as above, by hand:
 
 ```bash
-curl -X POST http://localhost:8080/admin/users/2/password-reset -H "Authorization: Bearer $token"
-# 200 {"token":"Hn4v...","expiresAtUtc":"2026-..."}   <- again, shown once
+# Promote yourself on a deployment with users but no admin. Both credentials: the token says who
+# you are, the secret says you are the operator. 204; 409 once any admin exists.
+curl -X POST http://localhost:8080/admin/bootstrap \
+  -H "Authorization: Bearer $token" \
+  -H "X-Bootstrap-Secret: $Bootstrap__Secret"
 
-# Them, with no token of their own and no old password:
+# Create an invite. The token comes back HERE AND NOWHERE ELSE.
+curl -X POST http://localhost:8080/admin/invites \
+  -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+  -d '{"email":"alex@example.com","note":"new starter"}'
+# 201 {"token":"y1Qk...","invite":{"id":1,"email":"ALEX@EXAMPLE.COM","expiresAtUtc":"2026-...",...}}
+
+# They register with it in the body, and no header at all -- or you send them
+# ${Web__PublicBaseUrl}/portal/register#invite=y1Qk... and they use the page.
+curl -X POST http://localhost:8080/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"alex@example.com","password":"correct-horse-battery","inviteToken":"y1Qk..."}'
+# 201 -- then POST /auth/login from each of their devices.
+
+# Issue a password reset, shown once.
+curl -X POST http://localhost:8080/admin/users/2/password-reset -H "Authorization: Bearer $token"
+# 200 {"token":"Hn4v...","expiresAtUtc":"2026-..."}
+
+# Them, with no token of their own and no old password (or ${Web__PublicBaseUrl}/portal/reset#token=Hn4v...):
 curl -X POST http://localhost:8080/auth/password/reset \
   -H 'Content-Type: application/json' \
   -d '{"resetToken":"Hn4v...","newPassword":"a-new-correct-horse"}'
-# 204 — every one of their devices is signed out and signs in again.
+# 204 -- every one of their devices is signed out and signs in again.
 ```
-
-It dies on first use, expires in `Auth__PasswordResetExpiryHours`, and issuing a second one kills the
-first. An unknown, expired or already-spent token all answer the same `400`. If nobody can administer
-the server at all, the `psql` recovery in
-[Recovering a lost password](#recovering-a-lost-password) is still there.
 
 ## Endpoints
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `GET /` | none | Name and running version (the image's `VERSION` build arg). |
+| `GET /` | none | Name and running version (the image's `VERSION` build arg). With the portal on, a browser (`Accept: text/html`) is redirected to `/portal` instead. |
 | `GET /health` | none | Liveness. Touches no database, which is why it is also the container's `HEALTHCHECK`. |
-| `GET /auth/capabilities` | none | This server's account policy, so a client can render the truth instead of guessing: whether registration is open, which credentials it accepts (the secret, an invite, or both), the minimum password length, whether an unclaimed account is waiting, and the lockout numbers. Configuration, not secrets. |
+| `GET /auth/capabilities` | none | This server's account policy, so a client can render the truth instead of guessing: whether registration is open, which credentials it accepts (the secret, an invite, or both), the minimum password length, whether an unclaimed account is waiting, the lockout numbers, and `portalUrl` — where the web portal is, or `null` when it is off. Configuration, not secrets. |
 | `POST /auth/register` | `X-Bootstrap-Secret` header **or** an `inviteToken` in the body | Create a user. `201` and the user; **no token** — tokens are device-scoped. `403` registration disabled, `401` neither credential accepted, `400` bad email or password, `409` email taken, and `409` for an invite that is expired, spent, or addressed to somebody else. |
 | `POST /auth/claim` | `X-Bootstrap-Secret` header | Attach an email and password to a pre-user-accounts account, in place, keeping its data and its devices. `409` when there is nothing claimable. Deliberately **not** gated by `REGISTRATIONS_ALLOWED`. |
 | `POST /auth/login` | none (credentials in the body) | **The only source of a token.** Enrols the request's `deviceId` under the authenticated user and mints a JWT for that `(user, device)`. `401` for any bad credential, `423` locked out, `429` rate-limited. |
@@ -242,6 +352,14 @@ the server at all, the `psql` recovery in
 | `GET /reports/tasks/{taskSyncId}?from=&to=` | bearer | One task, with a per-day breakdown. |
 
 All three report endpoints also take `?format=csv` (see [Reports](#reports)).
+
+**Compatibility routes.** `POST /auth/register`, `POST /auth/claim`, `POST /auth/password`,
+`POST /auth/password/reset`, `GET /auth/devices`, `DELETE /auth/devices/{deviceId}`,
+`POST /auth/logout-all` and `DELETE /auth/account` keep working exactly as described above — for desktop
+builds already in the field and for scripts — but account management now lives in
+[the web portal](#the-web-portal), and **no new behaviour lands on these routes**. They go at the next
+deliberately wire-breaking release, not before. `POST /auth/login`, `GET /auth/capabilities` and
+`GET /auth/whoami` are what the desktop client speaks and are not on the list.
 
 **Operator routes.** Every one of these is `401` without a token and `403` with a non-admin's, enforced
 by an authorization policy whose claim is resolved from the database on each request rather than read
@@ -261,6 +379,21 @@ until somebody is an admin, and nothing here is reachable with the bootstrap sec
 | `GET /admin/invites` | Every invite — metadata, never the token. Redeemed rows are kept: an invite is the record of how an account came to exist. |
 | `DELETE /admin/invites/{id}` | Revoke an unredeemed invite. `204`; `404` unknown; `409` if it has already been redeemed, since deleting it would erase that record and it is unusable anyway. |
 
+These are **not** compatibility routes: they are the operators' scripting interface, and the portal's
+Administration pages call exactly the same code, with the same guards and audit line.
+
+**Portal pages** (only while `Web__Enabled=true`; with it off none of them exists). Every form is a
+`POST` carrying an antiforgery token, and a page never spends a token just by loading.
+
+| Page | Who | What |
+|---|---|---|
+| `/portal/login`, `/portal/logout` | anyone | Sign in with email and password; the same lockout and rate limit as `/auth/login`, and no device is created. Sign-out is a `POST` and ends only that browser's session. |
+| `/portal/setup` | anyone holding `Bootstrap__Secret` | First run: create the first account, claim a pre-user-accounts install, or promote yourself when nobody is an admin. `404` once an admin exists. |
+| `/portal/register` | anyone holding an invite link (or the secret, while `Auth__SignupSecretEnabled`) | Create an account and sign straight in. |
+| `/portal/reset` | anyone holding a reset link | Choose a new password; every device is signed out, and nobody is signed in. |
+| `/portal`, `/portal/account/devices`, `/portal/account/security`, `/portal/account/delete` | signed in | Your account, your devices, password change and sign-out-everywhere, and account deletion. |
+| `/portal/admin/users`, `/portal/admin/invites` | signed in **and** an admin | Everything the operator routes above do. |
+
 ## Configuration
 
 Everything is environment-driven; `docker-compose.yml` reads it from `.env` (start from `.env.example`,
@@ -272,7 +405,7 @@ the `Jwt:SigningKey` key.
 | Variable | Notes |
 |---|---|
 | `Jwt__SigningKey` | Signs device tokens. At least 32 bytes. Rotating it invalidates every issued token, so every device signs in again. Not stored in the database — back it up with your dumps. |
-| `Bootstrap__Secret` | Gates **registration** (`POST /auth/register`, `POST /auth/claim`) via the `X-Bootstrap-Secret` header, and nothing else. It cannot mint a token; only a password can. Treat it like a password. |
+| `Bootstrap__Secret` | The operator credential: `/portal/setup`, and `POST /auth/register`, `POST /auth/claim` and `POST /admin/bootstrap` via the `X-Bootstrap-Secret` header. It cannot mint a token or a session; only a password can. Treat it like a password. |
 | `POSTGRES_PASSWORD` | Password for the bundled Postgres. Baked into the volume by `initdb` on the first boot — changing it later needs an `ALTER USER`, not an edit here. |
 
 A database must be reachable one of two ways: the four `POSTGRES_HOST` / `POSTGRES_DB` /
@@ -298,6 +431,9 @@ in `src/WorkLedger.Server/Data/PostgresConnection.cs`.
 | `Auth__LoginRateLimitPerMinute` | `10` | Per-IP limit on `/auth/register`, `/auth/claim`, `/auth/login` and `/auth/password/reset`; over it is `429` with `Retry-After`. `0` disables it. Which address it partitions on depends on `Network__TrustedProxies` below. |
 | `Network__TrustedProxies` | *(unset)* | Comma-separated IP addresses and CIDR blocks of the reverse proxies whose `X-Forwarded-For` this deployment believes. **Unset means no forwarded-header processing at all** — the middleware is not even registered — so the rate limiter partitions on the socket address, as it always has. Set it and each caller behind the proxy gets their own bucket. A malformed entry fails startup naming the value; see [Putting it behind TLS](#putting-it-behind-tls). |
 | `Auth__StampCacheSeconds` | `30` | How long a token's revocation check is cached. **This is the revocation lag**, and only for revocations that happen elsewhere: the endpoints that revoke evict the entry themselves, so the common case is immediate. `0` checks the database on every authenticated request. |
+| `Web__Enabled` | `false` | Serve [the web portal](#the-web-portal) under `/portal`. Off means absent: no page, cookie or route, and every existing request behaves as before. |
+| `Web__PublicBaseUrl` | *(unset)* | **Required when `Web__Enabled=true`** — startup fails naming the key without it. The absolute `https://` address browsers reach this server at (only `localhost` may be `http://`), no path, query or fragment. The only source of invite links, reset links and `portalUrl`; never the request's `Host`. |
+| `Web__SessionHours` | `8` | A portal session's sliding lifetime. There is no "remember me". |
 | `Database__MigrateOnStartup` | `true` | Set `false` to apply migrations as a separate step instead (see [Schema changes](#schema-changes)). |
 | `API_PORT` / `API_BIND` | `8080` / `0.0.0.0` | Host side of the published port. `API_BIND=127.0.0.1` when a reverse proxy is the only thing that should reach it. |
 | `WORKLEDGER_VERSION` | `latest` | Image tag to run, and the version stamped into a local build. |
@@ -412,6 +548,12 @@ deployment carries on exactly as before. To use any of it, promote yourself once
 [Running this for more than one person](#running-this-for-more-than-one-person). A deployment created
 after this release needs nothing: its first account is already an admin.
 
+**Upgrading onto a release with the web portal** changes nothing until you set `Web__Enabled=true`.
+The migration adds one table, `DataProtectionKeys`, which stays empty while the portal is off. Turning
+the portal on is the [two settings in The web portal](#the-web-portal) and a restart; existing desktop
+installs keep their tokens and carry on syncing. The JSON account routes they may still use are
+unchanged.
+
 ### Upgrading from a pre-user-accounts deployment
 
 Releases before this one had **one account**, seeded on first boot, and any device holding the bootstrap
@@ -445,7 +587,9 @@ curl -X POST http://localhost:8080/auth/claim \
 ```
 
 Then **sign every device in again** (`POST /auth/login`, as in
-[First run](#first-run-create-an-account-then-sign-in-from-each-device)). Every pre-upgrade token is
+[First run](#without-the-portal-or-from-a-script)). With the portal on, `/portal/setup` does the claim
+step for you: it offers **claim this server** while that one credential-less row exists, and asks for
+the same secret. Every pre-upgrade token is
 dead: they carry no security stamp and are refused on that basis alone, so there is no window in which
 an old token still works. The device rows survive the upgrade, so a device signing in with the same
 `deviceId` picks up its own row rather than creating a second one, and nothing re-syncs from scratch.
@@ -464,8 +608,8 @@ Two details worth knowing:
 
 ### Recovering a lost password
 
-**Try an administrator first.** `POST /admin/users/{id}/password-reset` issues a single-use token you
-hand over, and covers every case except the one where nobody can administer the server — see
+**Try an administrator first.** The portal's **Users → Password reset link** (or
+`POST /admin/users/{id}/password-reset`) issues a single-use link you hand over, and covers every case except the one where nobody can administer the server — see
 [Running this for more than one person](#running-this-for-more-than-one-person). What follows is the
 fallback for when that is not available: no admin exists, or the only one is the account that is locked
 out.
@@ -493,7 +637,8 @@ Projects, tasks, time entries and device rows are untouched.
 
 **If there is more than one account**, that path is closed on purpose — "claim" cannot know which
 account is yours once the deployment is multi-user. Copy a hash you do know the password for onto the
-locked-out row instead, sign in, and change it from the app:
+locked-out row instead, sign in, and change it in the portal (**Password & sign-out**) or with
+`POST /auth/password`:
 
 ```sql
 UPDATE "Users" SET "PasswordHash" = (SELECT "PasswordHash" FROM "Users" WHERE "NormalizedEmail" = 'KNOWN@EXAMPLE.COM'),
@@ -511,8 +656,9 @@ UPDATE "Users" SET "SecurityStamp" = gen_random_uuid()::text WHERE "NormalizedEm
 That one takes up to `Auth__StampCacheSeconds` to bite, because a hand-written `UPDATE` cannot evict the
 API's revocation cache the way `/auth/logout-all` does.
 
-**If the problem is that nobody is an administrator**, you do not need `psql` for it — sign in as any
-user and `POST /admin/bootstrap` with the secret, as in
+**If the problem is that nobody is an administrator**, you do not need `psql` for it — `/portal/setup`
+lets any user sign in and promote themselves with the secret, or sign in from a device and
+`POST /admin/bootstrap` with it, as in
 [Running this for more than one person](#running-this-for-more-than-one-person). The `psql` equivalent
 is `UPDATE "Users" SET "IsAdmin" = true WHERE "NormalizedEmail" = 'YOU@EXAMPLE.COM';`, which takes up
 to `Auth__StampCacheSeconds` to be seen for the same reason as above.
@@ -529,9 +675,19 @@ API_BIND=127.0.0.1
 ```
 
 Then point NGINX (or Caddy, or Traefik) at `127.0.0.1:8080`, forwarding `Host`, `X-Forwarded-For` and
-`X-Forwarded-Proto`. Nothing in the app depends on the request scheme — auth is a bearer header, there
-are no cookies and no redirect-to-HTTPS — so the proxy needs no cooperation from the app to serve
+`X-Forwarded-Proto`. Nothing in the app depends on the request scheme — the API's auth is a bearer
+header and there is no redirect-to-HTTPS — so the proxy needs no cooperation from the app to serve
 traffic correctly.
+
+**The portal needs nothing extra from the proxy either**: one route for the whole origin serves the
+sync API and the portal alike. Its cookies are always issued `Secure`, whatever the proxy-to-app hop
+is, because a browser accepts a `Secure` cookie whenever *its* connection is HTTPS — so the app does
+not trust `X-Forwarded-Proto` to learn the scheme, and does not need to. What it does need is
+`Web__PublicBaseUrl` set to the `https://` address the proxy serves, since that, not the forwarded
+`Host`, is what every link it hands out is built from. A portal behind plain http on anything other
+than `localhost` cannot work: the browser would never send the session cookie back. If you want the
+portal reachable from fewer places than the API, restrict `/portal` at the proxy; the prefix is there
+so you can.
 
 **One thing does change behind a proxy, and there is a setting for it.**
 `Auth__LoginRateLimitPerMinute` partitions on the socket's remote address, which behind a proxy is the
@@ -571,18 +727,25 @@ network is what goes in the list.
 
 `docker compose logs -f api`. One line per request — method, path, status — plus EF Core's migration
 output on boot. Deliberately narrow: `Request.Path` excludes the query string and no header is logged,
-which is what keeps bearer tokens and the bootstrap secret out of the log, since every secret this API
-accepts arrives in a header. EF's SQL logging is set to `Warning` in `appsettings.json` so a production
+which is what keeps bearer tokens and the bootstrap secret out of the log, since every secret the API
+accepts arrives in a header. The portal keeps to the same rule by construction: passwords, the secret
+and invite or reset tokens arrive in a `POST` body, and invite and reset links carry their token after
+the `#`, which a browser never sends — so no token is ever in a path. A test captures every log line,
+at every level, across issuing and redeeming both kinds of link, and fails if a token appears. EF's SQL logging is set to `Warning` in `appsettings.json` so a production
 log is not a transcript of every query.
 
-Three lines are normal and not worth chasing:
+A few lines are normal and not worth chasing:
 
 - On the **very first** boot, a `fail: Microsoft.EntityFrameworkCore.Database.Command` for
   `SELECT ... FROM "__EFMigrationsHistory"` — EF looking for a migrations table that does not exist yet,
   immediately before it creates it.
-- Two `Microsoft.AspNetCore.DataProtection` warnings about keys not being persisted outside the
-  container. Nothing here uses data protection — the JWTs are signed with `Jwt__SigningKey`, which is
-  yours and stable — so an ephemeral key ring is harmless.
+- With the portal **off**, `Microsoft.AspNetCore.DataProtection` warnings about keys not being
+  persisted outside the container. Nothing uses data protection while the portal is off — the JWTs are
+  signed with `Jwt__SigningKey`, which is yours and stable — so an ephemeral key ring is harmless.
+- With the portal **on**, one `No XML encryptor configured. Key {…} may be persisted to storage in
+  unencrypted form` each time a new key is created (the first boot, and roughly every 90 days after).
+  That is the deliberate choice described in [The web portal](#the-web-portal): the keys live in
+  Postgres, unencrypted, beside the user rows they protect sessions for.
 
 ### Smoke test
 
@@ -592,6 +755,11 @@ task → two time entries from one, pull them on the other, edit from the second
 on the first, push a stale edit and check the server hands back the winner, check every report agrees
 with what was pushed (including the CSV header and the 404/400 paths), list the account's devices, and
 delete the account again.
+
+If `/auth/capabilities` advertises a `portalUrl`, it also fetches `/portal/login` and asserts a `200`
+with the portal's `Content-Security-Policy`, that the stylesheet is served anonymously, and that JSON
+responses carry none of the portal's headers; with the portal off it asserts `/portal` is not a page.
+That proves the image serves pages and their static assets — the portal's flows are the test suite's.
 
 ```powershell
 pwsh ./scripts/smoke-test.ps1              # against a stack that is already up
@@ -640,10 +808,24 @@ look around; that account and its rows then stay until you delete them or drop t
 
 ### What it does
 
-- **Nothing is anonymous** except `/`, `/health` and the four endpoints a caller with no token needs
-  (`/auth/capabilities`, `/auth/register`, `/auth/claim`, `/auth/login`) — enforced by an authorization
-  fallback policy rather than per-endpoint attributes, so a new endpoint cannot be left open by
-  omission.
+- **Nothing is anonymous** except `/`, `/health`, the five endpoints a caller with no token needs
+  (`/auth/capabilities`, `/auth/register`, `/auth/claim`, `/auth/login`, `/auth/password/reset`), and,
+  with the portal on, its sign-in, setup, register and reset pages, a few informational pages and its
+  static assets — enforced by an authorization fallback policy rather than per-endpoint attributes, so
+  a new endpoint cannot be left open by omission.
+- **A browser never holds a device token, and the two credentials never cross.** The portal's session
+  is a user-level cookie — `__Host-` prefixed, `HttpOnly`, `Secure`, `SameSite=Lax`, sliding over
+  `Web__SessionHours` — carrying the user id and security stamp and **no admin claim**. It is
+  validated against the same user row as a token on every request, so a stamp bump, a suspension, a
+  demotion or a deletion ends it at once. The JSON API refuses the cookie, the portal refuses bearer
+  tokens, and every portal form carries an antiforgery token.
+- **Portal responses are hardened, and only portal responses.** A `Content-Security-Policy` with no
+  `unsafe-inline` (the pages use no inline script or style), `Referrer-Policy: no-referrer`,
+  `X-Content-Type-Options: nosniff` and `Cache-Control: no-store`. The portal's sign-in and link pages
+  share the per-IP credential rate limit with `/auth/login`, and a portal sign-in spends the same
+  per-account lockout budget as a device's.
+- **Links are never built from `Host`.** Invite and reset links come from `Web__PublicBaseUrl` alone,
+  carry their token in the fragment, and are spent only by a form post — never by opening them.
 - **Every query is scoped to the token's user**, and a route id belonging to another user is a 404
   rather than a 403, so an id cannot be probed for existence.
 - **Passwords are hashed with PBKDF2-SHA512**, salted per password and version-prefixed
@@ -691,17 +873,17 @@ look around; that account and its rows then stay until you delete them or drop t
 - The bootstrap secret is compared in fixed time, and the app refuses to start without one, without a
   signing key, or without a reachable database.
 - The container runs as a non-root user (`app`, uid 1654) and Postgres publishes no host port.
-- Secrets are never logged: the request log is method, path and status only — no query string and no
-  headers, which is what keeps bearer tokens and the bootstrap secret out of it, since every secret this
-  API accepts arrives in a header.
+- Secrets are never logged: the request log is method, path and status only — no query string, no
+  headers and no body. Every secret the JSON API accepts arrives in a header or a body, and every one
+  the portal accepts arrives in a form body, so none is ever in a path.
 
 ### What it deliberately does not do
 
 - **No email verification.** An email address is an identifier here, not a verified one; the server
   sends no mail and never contacts the address. Anyone holding the signup secret can register any
   address they like.
-- **No self-service password reset.** There is an *admin-issued* one — `POST
-  /admin/users/{id}/password-reset` mints a single-use token you hand over out of band — but no
+- **No self-service password reset.** There is an *admin-issued* one — the portal's reset link, or `POST
+  /admin/users/{id}/password-reset` — which you hand over out of band, but no
   `forgot my password` a user can drive alone, because that needs mail the server cannot send. A
   deployment with no administrator left at all falls back to the database; see
   [Recovering a lost password](#recovering-a-lost-password). Keep the signing key and a recent dump
@@ -712,10 +894,10 @@ look around; that account and its rows then stay until you delete them or drop t
   they store: one user can still fill the volume for everyone. **Every registered user is a full
   tenant.** Deletion is the only way an admin affects another user's rows, and it destroys them rather
   than exposing them.
-- **No CORS policy.** The only client is a desktop app calling over `HttpClient`, not a browser origin,
-  so CORS is never consulted. Opening it "just in case" would only hand every page on the internet the
-  ability to drive the API with a token it managed to read. A browser client would be an explicit
-  decision, not something already left open.
+- **No CORS policy.** The desktop app calls over `HttpClient`, not from a browser origin, and the
+  portal is served from the API's own origin, so CORS is never consulted. Opening it "just in case"
+  would only hand every page on the internet the ability to drive the API with a token it managed to
+  read.
 - **No refresh or token rotation.** Tokens are long-lived (`Jwt__ExpiryDays`, 365 by default) by choice,
   with revocation carrying the weight short expiry usually carries — see `JwtTokenService`'s XML doc for
   why that was chosen rather than overlooked. Rotating `Jwt__SigningKey` remains the blunt instrument
@@ -755,6 +937,15 @@ dotnet run --project src/WorkLedger.Server                 # http://localhost:52
 
 The dev connection string (`localhost:15432`) lives in `appsettings.Development.json`, so a Production
 run has no localhost fallback to silently fall back to.
+
+To work on the portal, turn it on for that run — `http://localhost` is allowed as a public base URL
+because browsers treat it as a secure context:
+
+```powershell
+$env:Web__Enabled = "true"
+$env:Web__PublicBaseUrl = "http://localhost:5284"
+dotnet run --project src/WorkLedger.Server                 # then open http://localhost:5284/portal/setup
+```
 
 ### Tests
 
@@ -808,6 +999,11 @@ package (a cross-repo `ProjectReference` was rejected: client CI checks out only
 commit, or the two sides drift silently, which is the exact failure the shared-C#-types design exists to
 prevent. Nothing detects automatically that the copy has fallen behind; check with
 `git log --oneline <pinned-commit>..HEAD -- src/WorkLedger.Contracts`.
+
+**`WorkLedger.Contracts` holds what the desktop client speaks, and nothing else** (S11). The admin API's
+request and response shapes and `ResetPasswordRequest` live in the server (`Auth/AdminDtos.cs`), because
+the client never calls `/admin/*` or `/auth/password/reset`. The current handoff — what the client
+re-vendors and why none of it breaks a call site — is `plans/S11-client-handoff.md`.
 
 Server work reads the client repo freely but does not commit to it (`plans/README.md`).
 

@@ -40,8 +40,10 @@ Tests need a working Docker daemon: the data/auth/sync/report tests each spin up
 Three projects (`WorkLedger-Server.slnx`), .NET 10, Minimal APIs, EF Core + Npgsql:
 
 - **`src/WorkLedger.Contracts`** — dependency-free (no ASP.NET, no EF) class library holding the wire
-  DTOs. It is the source of truth for the contract with the client repo (see *Cross-repo* below). Keep it
-  free of server-only packages: the client compiles these same files.
+  DTOs **the desktop client speaks, and nothing else** (S11's rule). It is the source of truth for the
+  contract with the client repo (see *Cross-repo* below). Keep it free of server-only packages: the client
+  compiles these same files. Shapes only a server-side surface uses — the `/admin/*` JSON API, the portal
+  — belong in `WorkLedger.Server` (`Auth/AdminDtos.cs` holds the admin ones and `ResetPasswordRequest`).
 - **`src/WorkLedger.Server`** — everything wired in `Program.cs` (no controllers): DI, JWT bearer, a
   `FallbackPolicy` that makes every endpoint authenticated unless it opts out with `.AllowAnonymous()`
   (`/`, `/health`, and everything in `Auth/AuthEndpoints.cs` bar `/auth/whoami` and `/auth/password` —
@@ -50,12 +52,26 @@ Three projects (`WorkLedger-Server.slnx`), .NET 10, Minimal APIs, EF Core + Npgs
   holds S8's four signed-in routes (devices, logout-all, account deletion) and `Auth/AdminEndpoints.cs`
   holds S10's operator surface; both are mapped from `MapAuthEndpoints()`, and nothing in either opts
   out of the fallback policy.
+  - **The service layer (S11 group A).** The account rules live in `Auth/` services —
+    `CredentialCheck`, `RegistrationService`, `AccountSelfService`, `AccountDeletion`, `AdminOperations`,
+    `InviteService`, `PasswordResetService`, `ServerSetup` — and both the JSON endpoints and the portal
+    pages are thin callers of them. Add a rule to the service, never to one of its two callers.
+  - **The web portal (S11).** Razor Pages under `/portal` (`Pages/Portal/`), wired by `Web/PortalSetup.cs`,
+    behind `Web:Enabled` (default **false** — off means no page, asset, header or persisted key ring is
+    mapped) and a required `Web:PublicBaseUrl` (`WebOptions`, resolved eagerly; the only source of absolute
+    links, never the `Host` header). Pages get `PortalUser`/`PortalAdmin` or `AllowAnonymous` by folder
+    convention in `PortalSetup`; a page with neither falls to the bearer fallback and fails closed.
+    **Tokens travel only in URL fragments or POST bodies, and no GET spends one.**
+  - **The JSON account routes are compatibility routes** (`/auth/register`, `/auth/claim`,
+    `/auth/password`, `/auth/password/reset`, `/auth/devices`, `/auth/logout-all`, `DELETE /auth/account`):
+    they keep working unchanged for clients in the field, and **no new behaviour lands on them** — new
+    account features are portal-only. `/admin/*` is *not* one; it stays the operators' scripting interface.
 - **`tests/WorkLedger.Server.Tests`** — xUnit, `WebApplicationFactory<Program>` + Testcontainers.
 
-`plans/` holds the S0–S10 build plans (all shipped) and is the design record — `plans/README.md`
-explains the cross-repo contract handoff and house style. **`plans/S10-client-handoff.md` is the
-authoritative statement of the current wire contract**; `plans/S9-client-handoff.md` is the previous
-cutover's and is still the record of what S6–S8 changed.
+`plans/` holds the S0–S11 build plans (all shipped) and is the design record — `plans/README.md`
+explains the cross-repo contract handoff and house style. **`plans/S11-client-handoff.md` is the
+authoritative statement of the current wire contract** (it supersedes S10's, which the client never
+applied); `plans/S9-client-handoff.md` is still the record of what S6–S8 changed.
 
 ### Deployment (`Dockerfile`, `docker-compose.yml`)
 
@@ -70,7 +86,12 @@ document deployment behaviour rather than here. Three things that bite when edit
   `BootstrapOptions` and `PostgresConnection` eagerly right after `Build()` so misconfiguration exits the
   container naming the key instead of 500ing on a device's first sync.
 - `scripts/smoke-test.ps1` is the only test that exercises the deployment (image, compose wiring,
-  migrate-on-boot, a container-minted token). It writes real rows and does not clean up.
+  migrate-on-boot, a container-minted token, and — when capabilities advertise a `portalUrl` — that the
+  image serves portal pages with their CSP and static assets). It writes real rows, deletes the accounts
+  it created, and leaves one redeemed `Invites` row per run by design.
+- Every optional key in `docker-compose.yml` is passed through **blank** (`${Key:-}`), so a key missing
+  from its `environment:` block is silently ignored under compose however `.env` sets it. Adding a
+  config key means adding it there too (S11 found four S10 keys that had been missed).
 
 ### The auth model in one paragraph
 
@@ -86,22 +107,33 @@ is what the `admin` authorization policy gates `/admin/*` on — **never minted 
 year-long token must not carry a year-long privilege. So a demotion or a suspension bites on the very
 next request. **`Auth:StampCacheSeconds` is the lag**,
 but only for a revocation that happened somewhere else, because the endpoints that revoke evict the
-cache key themselves. The three sections below are the detail; the rules live as XML docs on
+cache key themselves.
+**The portal adds one user-level cookie scheme (`"Portal"`, `Web/PortalSession.cs`), validated against the
+same user row and never accepted by the JSON API** — the default scheme stays JwtBearer, and a bearer token
+never authenticates a portal page. The cookie carries `user_id` and `stamp` and no admin claim;
+`PortalSession.ValidatePrincipalAsync` checks a cached `user:{id}` snapshot of `(SecurityStamp, IsAdmin,
+disabled)` per request, and `TokenRevocation.EvictUserAsync` evicts that key with the user's device keys,
+so every revoking path ends portal sessions immediately too. A portal session creates no `Device` row, and
+portal sign-in goes through `CredentialCheck`, so it shares the per-user lockout with `/auth/login`.
+The three sections below are the detail; the rules live as XML docs on
 `CredentialCheck`, `AccountSelfService`, `AccountDeletion`, `AdminOperations`, `TokenRevocation`,
-`JwtTokenService` and `User`. Since S11 the endpoint classes in `Auth/` are thin callers of those services
+`JwtTokenService`, `PortalSession` and `User`. Since S11 the endpoint classes in `Auth/` are thin callers of those services
 and document only the HTTP surface (status codes, where the secret arrives from); a rule's reasoning lives
 on the service that enforces it.
 
-### Tenancy: UserId always comes from the token
+### Tenancy: UserId always comes from the credential
 
 The user account is the top of the tenancy tree (S6): one `User` row, many `Device` rows, and the
 rows a device syncs belong to the **user** — `OriginDeviceId` is provenance, not ownership.
 `ICurrentContext` reads `user_id`/`device_id` from JWT claims; **nothing in a request body or URL may
-widen scope**. Every sync and report query filters on `UserId`. Ids exposed in routes and payloads are
+widen scope**. Portal pages scope on the session cookie's `user_id` (`PortalSession.UserId(User)`) in exactly
+the same way — an admin page names a target user, but only behind `PortalAdmin`, exactly as `/admin/*` does.
+Every sync and report query filters on `UserId`. Ids exposed in routes and payloads are
 cross-device `SyncId` Guids, never the server's internal `int Id` — a route with an unknown or
 other-user SyncId is a 404.
 
-Nothing is seeded: a fresh database has zero users, and the first `POST /auth/register` creates one.
+Nothing is seeded: a fresh database has zero users, and the first `POST /auth/register` (or
+`/portal/setup`) creates one — the first user is the admin.
 A `User` row whose `PasswordHash` is null is the **unclaimed pre-S6 tenant** awaiting
 `POST /auth/claim`; it can never authenticate, and that endpoint is the column's only writer. Read
 `User`'s XML doc before treating those nullable credential columns as an oversight.
@@ -211,25 +243,33 @@ own repo). Consequences:
 - The client's `Tests/WorkLedger.Tests/SyncContractGuardTests.cs` only guards the vendored copy against
   the *client's* own constants and payload shapes. Nothing automatically detects that the copy has fallen
   behind this repo.
-- **Known drift: S10's auth contract, and nothing else.** The copy is pinned at server **`3d27c86`**
-  (re-vendored 2026-09-15, WL-133), which closed the S6–S8 drift this paragraph used to describe.
-  **Do not re-assert that older description** — `RegisterDeviceRequest`/`Response` being deleted and
-  `WhoAmIResponse` being reshaped are on the client already. What is outstanding is S10: seven added
-  records, and two that gained a trailing defaulted parameter (`RegisterUserRequest.InviteToken`,
-  `AuthCapabilitiesResponse.RegistrationAcceptsInvite`). **`plans/S10-client-handoff.md` is that
-  inventory in full**, and `plans/S9-client-handoff.md` remains the record of the previous cutover.
+- **Known drift: three trailing, defaulted parameters, and nothing else.** The copy is pinned at server
+  **`3d27c86`** (re-vendored 2026-09-15, WL-133), which closed the S6–S8 drift this paragraph once
+  described. **Do not re-assert that older description**: `RegisterDeviceRequest`/`Response` being
+  deleted and `WhoAmIResponse` being reshaped are on the client already. The client never re-vendored at
+  S10's `1e343c8`, and S11 then moved S10's seven added records (`AdminDtos.cs`, `ResetPasswordRequest`)
+  out of the library. So the whole of what is outstanding is `RegisterUserRequest.InviteToken` (S10) and
+  `AuthCapabilitiesResponse.RegistrationAcceptsInvite` (S10) and `.PortalUrl` (S11). The next pin is
+  **`eb743d4`**, and **`plans/S11-client-handoff.md` is that inventory in full**. It supersedes S10's
+  handoff for the re-vendor; `plans/S9-client-handoff.md` remains the record of the S6–S8 cutover.
   Re-check with `git log --oneline 3d27c86..HEAD -- src/WorkLedger.Contracts`.
-  - **S10's re-vendor breaks no client call site** — every one was checked, and both new parameters
-    are last and defaulted. That is a deliberate constraint the whole epic was built under, not luck.
-    S9's was a genuine cutover; do not assume this one is.
+  - **The re-vendor breaks no client call site.** A scratch copy of the client was built and tested
+    against the new `AuthDtos.cs` (see the handoff), and every new parameter is last and defaulted. That
+    is a constraint S10 and S11 were both built under, not luck. S9's was a genuine cutover; do not
+    assume the next one isn't.
+  - **Records the client stops calling stay vendored.** `RegisterUserRequest`, `ChangePasswordRequest`,
+    `DeviceSummary` and `DeleteAccountRequest` back the JSON compatibility routes, so they stay in the
+    library, and so in the client's copy, until the next deliberately wire-breaking release. That is
+    not drift.
   - `Reports/ReportDtos.cs` is not drift at all — the client deliberately does not vendor it, because
     it computes its own local reports and never calls `/reports/*`. Nor is
     `SyncItemResult.AuthoritativeOperation` (WL-98), which is on the client and consumed as of WL-101.
   - **Each release re-vendors once, at the end**, deliberately: S6–S8 each changed
     `WorkLedger.Contracts`, and re-taking the copy three times would have handed the client three
-    breaking updates instead of one. S9 was that pass for S6–S8; S10E is that pass for S10.
-  - **The sync wire format is unchanged since before S6.** Audited file-by-file in S9 (WL-126) and
-    again in S10 (WL-172), where `git diff 3d27c86..HEAD -- src/WorkLedger.Contracts/Sync
+    breaking updates instead of one. S9 was that pass for S6–S8, S10E for S10, and S11F (which the
+    client will actually apply, covering S10 as well) for S11.
+  - **The sync wire format is unchanged since before S6.** Audited file-by-file in S9 (WL-126), again in
+    S10 (WL-172) and in S11 (WL-204), where `git diff 3d27c86..HEAD -- src/WorkLedger.Contracts/Sync
     src/WorkLedger.Contracts/Payloads src/WorkLedger.Contracts/Reports` is empty. Not assumed.
 
 ### Server comments that may have gone stale

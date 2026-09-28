@@ -72,11 +72,24 @@ services:
       # one and its default. None of them is required; only secrets get the `:?` treatment.
       Auth__RegistrationEnabled: ${Auth__RegistrationEnabled:-}
       REGISTRATIONS_ALLOWED: ${REGISTRATIONS_ALLOWED:-}
+      Auth__SignupSecretEnabled: ${Auth__SignupSecretEnabled:-}
+      SIGNUP_SECRET_ENABLED: ${SIGNUP_SECRET_ENABLED:-}
+      Auth__InviteExpiryDays: ${Auth__InviteExpiryDays:-}
+      Auth__PasswordResetExpiryHours: ${Auth__PasswordResetExpiryHours:-}
       Auth__MinPasswordLength: ${Auth__MinPasswordLength:-}
       Auth__MaxFailedLogins: ${Auth__MaxFailedLogins:-}
       Auth__LockoutMinutes: ${Auth__LockoutMinutes:-}
       Auth__LoginRateLimitPerMinute: ${Auth__LoginRateLimitPerMinute:-}
       Auth__StampCacheSeconds: ${Auth__StampCacheSeconds:-}
+      # Reverse proxy (S10). Blank means no forwarded-header processing at all; see README.md.
+      Network__TrustedProxies: ${Network__TrustedProxies:-}
+      # The web portal (S11). Off unless .env sets Web__Enabled=true, and then Web__PublicBaseUrl is
+      # required: the API refuses to start without it, naming the key. Web__SessionHours is the
+      # portal session's sliding lifetime (default 8). The portal is served by this same container,
+      # on this same port, beside the JSON API -- one origin, one process; README.md says why.
+      Web__Enabled: ${Web__Enabled:-}
+      Web__PublicBaseUrl: ${Web__PublicBaseUrl:-}
+      Web__SessionHours: ${Web__SessionHours:-}
     ports:
       # Host-side port only. Bind to 127.0.0.1 (API_BIND=127.0.0.1) when a reverse proxy on the same
       # host terminates TLS — see "Putting it behind TLS" in README.md.
