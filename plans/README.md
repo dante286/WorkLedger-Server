@@ -33,7 +33,7 @@ only at `WorkLedger.Contracts` (see S0).
 | — | [S10-client-handoff.md](S10-client-handoff.md) | WL-172 (step 0 superseded by S11's handoff) | S10 |
 | S11 | [S11-web-portal.md](S11-web-portal.md) | WL-179 (WL-180…WL-185, subtasks WL-186…WL-208) (done) | S10 |
 | — | [S11-client-handoff.md](S11-client-handoff.md) | WL-208 → client plan 12 (WL-173); supersedes S10's step 0 | S11 |
-| S12 | [S12-email-delivery.md](S12-email-delivery.md) | TBD (draft) | S11 |
+| S12 | [S12-email-delivery.md](S12-email-delivery.md) | WL-209 (WL-210…WL-214, subtasks WL-215…WL-230) | S11 |
 
 **S6–S9 are one release: user accounts.** S2 built auth for a single seeded account with devices enrolled by a
 shared secret, and named per-user accounts as the deferred follow-up. S6–S9 are that follow-up — a **user

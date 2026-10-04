@@ -1,18 +1,20 @@
 # Plan S12: Email delivery for invites, resets and self-service password recovery
 
-**Tickets:** not yet filed. Suggested shape, following S10 and S11: one epic labelled `server` + `auth` +
-`email`, one `Task` per scope group below, and `Subtask`s per item. **There is no client-side half.** This plan
+**Tickets:** epic **WL-209** (*Email delivery: emailed invites and resets, self-service password recovery
+(server)*). It has one `Task` per scope group and `Subtask`s per item, labelled `server` + `auth` + `email`,
+plus `web` on the tickets that change portal pages. `Blocks` links between the tasks encode the build order,
+and the epic is linked to S11's epic, WL-179, as "relates to". **There is no client-side half.** This plan
 changes nothing in `WorkLedger.Contracts` (see item 19), so it needs no handoff and no re-vendor.
 
-| Group | Items | What |
-|---|---|---|
-| A. Mail transport | 1–7 | Settings, the sender, the outbound queue, startup checks, log hygiene |
-| B. Operator-sent links | 8–11 | Email an invite, email a reset, a test-message page, `/admin/*` parity |
-| C. Self-service recovery | 12–16 | `/portal/forgot`, its uniform answer, cooldown, expiry, the schema column |
-| D. Security notice | 17 | "Your password was changed", from the service layer |
-| E. Contract, tests, docs | 18–22 | No contract change, tests, deployment, docs |
+| Group | Items | Task | Subtasks |
+|---|---|---|---|
+| A. Mail transport | 1–7 | WL-210 | WL-215 `EmailOptions` + startup line, WL-216 MailKit sender, WL-217 outbound queue, WL-218 templates, WL-219 log hygiene |
+| B. Operator-sent links | 8–11 | WL-211 | WL-220 email an invite, WL-221 email a reset, WL-222 `/portal/admin/email`, WL-223 `/admin/*` parity |
+| C. Self-service recovery | 12–16 | WL-212 | WL-224 `/portal/forgot`, WL-225 eligibility + cooldown, WL-226 `SelfService` column + expiry |
+| D. Security notice | 17 | WL-213 | — |
+| E. Contract, tests, docs | 18–22 | WL-214 | WL-227 tests, WL-228 Mailpit fixture, WL-229 deployment + smoke step, WL-230 docs |
 
-Build order is **A → B → C → D → E**. See Sequencing.
+Build order is **A → B → C → D → E** (WL-210 → WL-211 → WL-212 → WL-213 → WL-214). See Sequencing.
 
 > **Numbering.** S11's Out of scope named a portal reports page as an "S12 candidate". That was a suggestion,
 > not a reservation. If reports are built first, renumber this plan rather than the other way around.
