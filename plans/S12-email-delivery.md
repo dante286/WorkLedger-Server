@@ -75,48 +75,66 @@ S10 named three objections. This plan answers each of them:
    would be a new anonymous route that makes the server send mail, with no antiforgery protection in front
    of it.
 
-### The relay this deployment will use: Azure Communication Services
+### The relay this deployment will use: Resend
 
-The first deployment will relay through **Azure Communication Services (ACS) Email** over SMTP. This changes
-no code, because ACS is configured through the same `Email__*` environment variables as any other relay. It
-does decide which defaults have to work unchanged, and what the README's worked example shows:
+The first deployment will relay through **[Resend](https://resend.com) over SMTP**. That choice is made and
+recorded in **HP-82** (2026-10-04), which sets up the same relay for Vaultwarden. This changes no code,
+because Resend is configured through the same `Email__*` environment variables as any other relay. It does
+decide which defaults have to work unchanged, and what the README's worked example shows:
 
-| Setting | ACS value |
+| Setting | Resend value |
 |---|---|
-| `Email__SmtpHost` | `smtp.azurecomm.net` (Microsoft says to use the DNS name, never an IP address) |
-| `Email__SmtpPort` | `587` (the default here) |
-| `Email__SmtpSecurity` | `StartTls` (the default here). ACS requires TLS 1.2 or later. |
-| `Email__SmtpUsername` | An **SMTP Username** created on the ACS resource and linked to a Microsoft Entra app registration. It can be free text or an email address on one of the resource's linked domains. |
-| `Email__SmtpPassword` | A **client secret of that Entra app**. |
-| `Email__FromAddress` | A sender address on a domain connected to the ACS resource: the Azure-managed `…azurecomm.net` domain, or a verified custom domain. |
+| `Email__SmtpHost` | `smtp.resend.com` |
+| `Email__SmtpPort` | `587` (the default here). Resend also offers STARTTLS on 25 and 2587, and implicit TLS on 465 and 2465. |
+| `Email__SmtpSecurity` | `StartTls` (the default here). |
+| `Email__SmtpUsername` | The literal string `resend`. |
+| `Email__SmtpPassword` | A **Resend API key**, created with sending access only and restricted to `ledger.zanarkand.net`. |
+| `Email__FromAddress` | `no-reply@ledger.zanarkand.net` |
+| `Email__FromName` | `WorkLedger` (the default here). |
 
-Setting this up in Azure is operator work, and the README walks through it rather than the code handling it:
+**The sending domain is `ledger.zanarkand.net`, a dedicated subdomain, for the reason HP-82 gives for
+`vault.zanarkand.net`.** The apex `zanarkand.net` already publishes `v=spf1 include:spf.protection.outlook.com
+-all` and routes its MX to Exchange Online. A second SPF record at the apex would cause an SPF permerror and
+break the apex's live mail. Resend's records sit on child labels of the sending domain, so they collide with
+neither the apex nor any A record for the server's host. The Route 53 records follow HP-82's pattern; take
+the exact values from the Resend dashboard once the domain is added:
 
-1. Create an Email Communication resource with a domain, and connect it to a Communication Services
-   resource.
-2. Register an Entra app and give it a role on the Communication Services resource. The built-in
-   **Communication and Email Service Owner** role works. The least-privilege option is a custom role with
-   `CommunicationServices/Read`, `CommunicationServices/Write` and `EmailServices/Write`.
-3. Add an SMTP Username for that app, and wait until its status reads *Ready to use*.
+```
+MX   send.ledger.zanarkand.net              10 feedback-smtp.us-east-1.amazonses.com
+TXT  send.ledger.zanarkand.net              "v=spf1 include:amazonses.com ~all"
+TXT  resend._domainkey.ledger.zanarkand.net p=<key from the Resend dashboard>
+```
+
+Setting this up is operator work, and the README walks through it rather than the code handling it:
+
+1. Add `ledger.zanarkand.net` as a domain in the Resend account HP-82 creates.
+2. Add the three Route 53 records above, and wait for Resend to show the domain as verified.
+3. Create an API key with **sending access only, restricted to `ledger.zanarkand.net`**. Keep it separate from
+   Vaultwarden's key so either can be revoked without touching the other.
 
 **Three consequences for this plan:**
 
-- **The SMTP password expires.** Entra client secrets have a fixed lifetime. When one expires, ACS refuses
-  authentication with a 5xx reply. Item 3 treats 5xx as permanent and doesn't retry it, so every message
-  fails until the secret is rotated, and each failure produces one log line. The README's ACS section says to
-  calendar the secret's expiry and to rotate it by editing `.env` and running `docker compose up -d`.
-  Item 10's test page is how the operator confirms the new secret works.
-- **The from address must be one ACS accepts.** An address on a domain that isn't linked to the resource is
-  refused. Startup can't check this, because only the relay knows its domains. This is the most likely
-  first-run failure, and the test page shows ACS's own reply text, which names the problem.
-- **ACS applies sending quotas**, and new resources and Azure-managed domains start with low limits. Volume
-  here is a handful of messages a day, but a throttled send comes back as a 4xx reply, which item 3 retries.
-  The README points at Microsoft's quota page rather than repeating numbers that will go out of date.
+- **The free tier is shared with Vaultwarden.** That's 3,000 messages a month and 100 a day across both
+  apps. WorkLedger's volume is a handful a day, so this is headroom rather than a constraint. When a limit is
+  hit, what happens depends on the SMTP reply Resend sends, and neither its docs nor this plan pin that down.
+  If the reply is 4xx, item 3 retries it. If it's 5xx, the message is dropped and one log line is written.
+  Item 20's queue tests cover both paths, so whichever Resend sends is handled. The README points at Resend's
+  pricing page rather than repeating numbers that will go out of date.
+- **The API key doesn't expire on its own, but it can be revoked.** If it's revoked or deleted, Resend
+  refuses authentication with a 5xx reply. Item 3 doesn't retry that, so every message fails, and each
+  failure produces one log line, until a new key is in `.env` and `docker compose up -d` has run. Item 10's
+  test page is how the operator confirms the new key works. Because the key is restricted to one domain, a
+  leaked key can only send as `ledger.zanarkand.net`.
+- **The from address must be on the verified domain.** Resend refuses any other address. Startup can't check
+  this, because only the relay knows which domains are verified. This is the most likely first-run failure,
+  and the test page shows Resend's own reply text, which names the problem.
 
-**Not chosen: the `Azure.Communication.Email` SDK with a managed identity.** It would remove the client
-secret, but only when the container runs on Azure compute. It would also tie the server to one vendor, which
-decision 1 rules out. If a later deployment runs on Azure and wants to drop the secret, the
-`IEmailSender` seam in item 2 is where a second implementation would go.
+**Not chosen: Azure Communication Services.** ACS was the first choice, made to use MSDN Azure credit.
+Microsoft is retiring ACS Email: new customers are blocked from 2026-10-23, and the service ends 2028-09-30.
+Microsoft's own guidance is not to build new solutions on it. HP-82 records this and the other relays that were
+ruled out (SES, which starts in a sandbox; Postmark, with only 100 free messages a month; Microsoft 365; Zoho).
+**Not chosen either: Resend's HTTP API or SDK.** Decision 1 rules out a provider API. SMTP keeps the server
+portable to any relay, and Resend supports it fully.
 
 ## Scope
 
@@ -411,8 +429,9 @@ decision 1 rules out. If a later deployment runs on Azure and wants to drop the 
 22. **Docs.**
     - README: an *Email* section covering enabling it, choosing a relay, the settings table, the test-message
       page, what is sent and when, that nothing is stored to retry after a restart, and the deliverability
-      paragraph. **Use Azure Communication Services as the worked example**: the Azure setup steps, the
-      `.env` block, and client-secret rotation (see *The relay this deployment will use*). Add one sentence
+      paragraph. **Use Resend as the worked example**: the subdomain and why it isn't the apex, the three
+      DNS records, the sending-only API key restricted to one domain, the `.env` block, and replacing a revoked
+      key (see *The relay this deployment will use*). Add one sentence
       saying any other SMTP relay works the same way through the same keys. Rewrite the onboarding and reset sections to show email first, with the copy-the-link flow
       still described.
     - `CLAUDE.md`: the architecture list gains the mail transport. The auth paragraph notes that portal
