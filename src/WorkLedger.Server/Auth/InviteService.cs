@@ -61,7 +61,7 @@ public sealed class InviteService(WorkLedgerDbContext db, AuthOptions auth, ILog
 
         // Ids only — and not the bound address either. This is the one admin action whose entire
         // product is a secret, so its log line has to be especially dull.
-        AdminOperations.Audit(loggerFactory, actorUserId, "create-invite", actorUserId);
+        AdminOperations.AuditInvite(loggerFactory, actorUserId, "create-invite", invite.Id);
 
         return new InviteIssue.Issued(token, Summarize(invite));
     }
@@ -114,7 +114,7 @@ public sealed class InviteService(WorkLedgerDbContext db, AuthOptions auth, ILog
         db.Invites.Remove(invite);
         await db.SaveChangesAsync(cancellationToken);
 
-        AdminOperations.Audit(loggerFactory, actorUserId, "revoke-invite", actorUserId);
+        AdminOperations.AuditInvite(loggerFactory, actorUserId, "revoke-invite", invite.Id);
         return InviteRevocation.Revoked;
     }
 

@@ -389,7 +389,7 @@ public partial class PortalAdminPagesTests(UserAccountsFixture fixture) : IAsync
             "/auth/register", new RegisterUserRequest("invited@example.com", Password, null, InviteToken: invite));
         await host.CreateClient().PostAsJsonAsync("/auth/password/reset", new ResetPasswordRequest(reset, NewPassword));
 
-        Assert.Contains(logs.Lines, l => l.StartsWith("AdminAction:") && l.Contains("create-invite"));
+        Assert.Contains(logs.Lines, l => l.StartsWith("AdminAction:") && l.Contains("create-invite") && l.Contains("on invite"));
         Assert.Contains(logs.Lines, l => l.StartsWith("AdminAction:") && l.Contains("issue-password-reset"));
         Assert.DoesNotContain(logs.Lines, l => l.Contains(invite));
         Assert.DoesNotContain(logs.Lines, l => l.Contains(reset));
