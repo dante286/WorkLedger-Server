@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using WorkLedger.Server.Auth;
 
@@ -42,7 +43,7 @@ internal static class ReportEndpoints
             var report = await reports.WeeklyAsync(currentContext.UserId, parsedWeekOf, cancellationToken);
 
             return resolvedFormat == ReportFormat.Csv
-                ? Csv(ReportCsv.Weekly(report.Grid), $"workledger-weekly-{report.Dto.WeekStart:yyyy-MM-dd}.csv")
+                ? Csv(ReportCsv.Weekly(report.Grid), string.Create(CultureInfo.InvariantCulture, $"workledger-weekly-{report.Dto.WeekStart:yyyy-MM-dd}.csv"))
                 : Results.Ok(report.Dto);
         });
 
@@ -149,7 +150,9 @@ internal static class ReportEndpoints
     private static IResult InvalidDate(string parameter, string? raw) =>
         Results.BadRequest(new
         {
-            error = $"'{parameter}' must be a yyyy-MM-dd date no later than {ReportDates.Latest:yyyy-MM-dd}: '{raw}'.",
+            error = string.Create(
+                CultureInfo.InvariantCulture,
+                $"'{parameter}' must be a yyyy-MM-dd date no later than {ReportDates.Latest:yyyy-MM-dd}: '{raw}'."),
         });
 
     private static IResult UnknownFormat(string? format) =>

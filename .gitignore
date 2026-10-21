@@ -3,8 +3,10 @@
 ##
 ## Get latest from `dotnet new gitignore`
 
-# dotenv files
+# dotenv files (.env.local and friends too; the checked-in template is the one exception)
 .env
+.env.*
+!.env.example
 
 # User-specific files
 *.rsuser

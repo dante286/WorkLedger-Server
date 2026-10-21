@@ -59,10 +59,16 @@ services:
       # Escape hatch for an external/managed Postgres: set the full connection string in .env and it
       # wins over the four variables above. Blank (the default here) counts as unset.
       ConnectionStrings__Postgres: ${ConnectionStrings__Postgres:-}
+      # Blank means true (migrate on boot). Set false in .env to apply migrations as a separate step.
+      Database__MigrateOnStartup: ${Database__MigrateOnStartup:-}
       Jwt__SigningKey: ${Jwt__SigningKey:?set Jwt__SigningKey in .env (>= 32 bytes; copy .env.example)}
-      Jwt__ExpiryDays: ${Jwt__ExpiryDays:-365}
-      # Gates POST /auth/register and POST /auth/claim, and nothing else. Still required: an API
-      # whose signup gate is the empty string is an API with no signup gate.
+      # Optional, and passed through blank like the account policy below (blank means the server's
+      # default: 365 days, WorkLedger.Server / WorkLedger.Client).
+      Jwt__ExpiryDays: ${Jwt__ExpiryDays:-}
+      Jwt__Issuer: ${Jwt__Issuer:-}
+      Jwt__Audience: ${Jwt__Audience:-}
+      # Gates POST /auth/register, POST /auth/claim, POST /admin/bootstrap and /portal/setup. Still
+      # required: an API whose signup gate is the empty string is an API with no signup gate.
       Bootstrap__Secret: ${Bootstrap__Secret:?set Bootstrap__Secret in .env (copy .env.example)}
       # Account policy, all optional and all passed through *blank* when .env does not set them.
       # That is deliberate rather than lazy: AuthOptions treats a blank value as unset (the same
