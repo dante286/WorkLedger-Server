@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using WorkLedger.Contracts.Sync;
 using WorkLedger.Server.Data;
 using WorkLedger.Server.Data.Entities;
@@ -12,7 +13,7 @@ namespace WorkLedger.Server.Sync;
 /// <para><b>A. Higher version wins.</b> An incoming change is applied when
 /// <c>incoming.Version &gt; existing.Version</c>.</para>
 ///
-/// <para><b>B. Equal or lower loses</b>, and the server answers with its own version + payload so
+/// <para><b>B. Equal or lower from a different device loses</b>, and the server answers with its own version + payload so
 /// the pusher can adopt the winner immediately. There is deliberately <b>no timestamp tie-break</b>:
 /// the client's rule is a bare <c>remoteVersion &gt; (localVersion ?? 0)</c> and its RemoteChange
 /// type has no CreatedAt field at all, so a timestamp rule here could not be mirrored there. We
@@ -22,16 +23,22 @@ namespace WorkLedger.Server.Sync;
 /// data columns from the payload.</para>
 ///
 /// <para><b>D. Deletes tombstone, and the server bumps the version.</b> A delete is accepted at
-/// <c>&gt;=</c>, not <c>&gt;</c>, and is stored at <c>existing.Version + 1</c>. Both halves are
-/// forced by the client (see WL-93): its Delete*Async queues the delete without bumping the version,
-/// so a strict <c>&gt;</c> would reject every delete ever pushed; and the receiving client applies
-/// remote changes with that same strict <c>&gt;</c>, so a tombstone echoed back at the original
-/// version would be dropped by the other device. Bumping makes the tombstone strictly beat every
-/// peer's copy, so the delete actually lands. This is the one deliberate deviation from strict LWW;
-/// it can be reverted to a plain <c>&gt;</c> once WL-93 ships.</para>
+/// <c>&gt;=</c>, not <c>&gt;</c>, and is stored at <c>existing.Version + 1</c>. Both halves were
+/// forced by the client (WL-93): before it, its Delete*Async queued the delete without bumping the
+/// version, so a strict <c>&gt;</c> would reject every delete ever pushed; and the receiving client
+/// applies remote changes with that same strict <c>&gt;</c>, so a tombstone echoed back at the
+/// original version would be dropped by the other device. Bumping makes the tombstone strictly beat
+/// every peer's copy, so the delete actually lands. This is the one deliberate deviation from strict
+/// LWW. WL-93 has since shipped (the client's StampForDelete bumps), so current clients no longer need
+/// the <c>&gt;=</c> half, but builds older than it still do: reverting it to a plain <c>&gt;</c> breaks
+/// every delete from those builds, and is a release decision rather than a cleanup.</para>
 ///
-/// <para><b>E. Replays are accepted no-ops that touch nothing.</b> Not merely "don't bump the
-/// version" — <i>no EF write at all</i>. WorkLedgerDbContext stamps UpdatedAt on every modified row,
+/// <para><b>E. Replays are accepted no-ops that touch nothing.</b> A replay is the same-device
+/// carve-out to rules B and D: a change at or below the server's version from the device that
+/// authored the server's row (a retry, a self-echo, an ack the client never received) is already
+/// reflected, so it is accepted rather than lost; and a delete at or below an existing tombstone's
+/// version is accepted from anyone, so a retried batch cannot ratchet the version upward. Accepted, and
+/// <i>no EF write at all</i> — not merely "don't bump the version". WorkLedgerDbContext stamps UpdatedAt on every modified row,
 /// and UpdatedAt is the pull cursor, so an incidental write would re-deliver the row to every other
 /// device on their next pull. A no-op write is not free here; it is a broadcast.</para>
 ///
@@ -39,9 +46,29 @@ namespace WorkLedger.Server.Sync;
 /// EntityId is not a key: one batch legitimately carries create → update → delete for the same
 /// entity, and the client's own ack list is keyed by a local SyncQueue.Id the server never sees
 /// (WL-94).</para>
+///
+/// <para><b>The pull cursor.</b> A pull returns rows with <c>UpdatedAt &gt; since</c> (strict) and hands
+/// back <c>ServerTime</c> as the next <c>since</c>; anything landing exactly on the boundary is
+/// deduplicated by the client's own version comparison. That is only sound if no row can ever commit
+/// with an <c>UpdatedAt</c> at or below a <c>ServerTime</c> already handed out, and two things would
+/// break it. Reading the clock <i>after</i> the queries would hand out a cursor past a row written while
+/// they ran. And a push stamps <c>UpdatedAt</c> per item at <c>SaveChanges</c> but commits only at the
+/// end of the batch, so a pull running mid-batch cannot see rows whose stamps are already behind its
+/// clock. Each case drops the row from every later incremental pull, and since WL-92 the client
+/// persists its cursor, so nothing short of a full pull would recover it. So <b>push and pull are
+/// serialized per user</b> on a transaction-scoped advisory lock (<see cref="AdvisoryLockClass"/>, the
+/// user id): a push holds it exclusively until it commits, and a pull takes it shared and reads
+/// <c>ServerTime</c> before its queries. Every push is then either committed before the pull looks or
+/// stamped after its cursor. Pulls never wait on each other, and other users never wait at all.</para>
 /// </summary>
 public sealed class SyncService(WorkLedgerDbContext db)
 {
+    /// <summary>
+    /// The first key of the per-user advisory lock (the second is the user id) — see the class doc. A
+    /// constant of its own so it cannot collide with any other two-key advisory lock on the database.
+    /// </summary>
+    public const int AdvisoryLockClass = 0x574C53; // "WLS"
+
     public async Task<SyncPushResponse> PushAsync(
         SyncPushRequest request, int userId, string callerDeviceId, CancellationToken cancellationToken)
     {
@@ -58,6 +85,8 @@ public sealed class SyncService(WorkLedgerDbContext db)
             .OrderBy(item => RankOf(item.Change.EntityType));
 
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await db.Database.ExecuteSqlAsync(
+            $"SELECT pg_advisory_xact_lock({AdvisoryLockClass}, {userId})", cancellationToken);
 
         foreach (var (change, index) in ordered)
         {
@@ -80,6 +109,14 @@ public sealed class SyncService(WorkLedgerDbContext db)
     {
         var changes = new List<SyncChangeDto>();
 
+        // ServerTime is what the client should send as its next `since`. It is read once the lock is
+        // held and before the queries, so every row it vouches for is either visible to them or stamped
+        // after it (see the class doc). The transaction exists only to scope the lock; it writes nothing.
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await db.Database.ExecuteSqlAsync(
+            $"SELECT pg_advisory_xact_lock_shared({AdvisoryLockClass}, {userId})", cancellationToken);
+        var serverTime = DateTime.UtcNow;
+
         // Handlers are walked in dependency order so parents arrive before their children, which is
         // what a receiving client needs to resolve parent SyncIds as it merges.
         foreach (var handler in SyncEntityHandlers.ByEntityType.Values.OrderBy(h => h.OrderRank))
@@ -88,10 +125,9 @@ public sealed class SyncService(WorkLedgerDbContext db)
             changes.AddRange(rows.Select(row => ToChangeDto(handler, row)));
         }
 
-        // ServerTime is what the client should send as its next `since`. Read after the queries, so
-        // anything written while this request was running falls after the cursor and is delivered
-        // next time rather than being skipped.
-        return new SyncPullResponse(changes, DateTime.UtcNow);
+        await transaction.CommitAsync(cancellationToken);
+
+        return new SyncPullResponse(changes, serverTime);
     }
 
     private async Task<SyncItemResult> ApplyAsync(SyncChangeDto change, int userId, CancellationToken cancellationToken)
@@ -171,7 +207,11 @@ public sealed class SyncService(WorkLedgerDbContext db)
 
         if (change.Version < existing.Version)
         {
-            return ServerWins(handler, change, existing);
+            // Rule E applies to deletes too: the pusher authored the live row at a newer version than
+            // this delete, so its own later write already supersedes it.
+            return IsSameDevice(existing.OriginDeviceId, change.OriginDeviceId)
+                ? Accepted(change, existing.Version)
+                : ServerWins(handler, change, existing);
         }
 
         // The client sends the entity as the payload of a delete, and we only get here when that
@@ -217,9 +257,9 @@ public sealed class SyncService(WorkLedgerDbContext db)
         }
 
         // Genuine conflict: same-or-lower version from a different device. The server keeps its row
-        // and hands back the winner. Note the client must retire the queue row on this outcome too
-        // (adopting AuthoritativePayloadJson) or it will re-push it indefinitely — that is WL-94's
-        // half of this contract.
+        // and hands back the winner. The client must retire the queue row on this outcome too
+        // (adopting AuthoritativePayloadJson) or it would re-push it indefinitely; that is WL-94's half
+        // of this contract, and ApiSyncProvider.MapPushResults does it.
         return ServerWins(handler, change, existing);
     }
 

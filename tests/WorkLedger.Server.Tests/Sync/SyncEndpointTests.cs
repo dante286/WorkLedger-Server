@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using WorkLedger.Contracts.Payloads;
 using WorkLedger.Contracts.Sync;
 using WorkLedger.Server.Data.Entities;
+using WorkLedger.Server.Sync;
 using WorkLedger.Server.Tests.Auth;
 
 namespace WorkLedger.Server.Tests.Sync;
@@ -257,8 +258,9 @@ public class SyncEndpointTests(AuthWebAppFixture fixture)
     }
 
     /// <summary>
-    /// Rule D. The client queues a delete at the same version as the last update (WL-93), so this is
-    /// the shape every real delete arrives in — if it were rejected, deletes would never propagate.
+    /// Rule D. Client builds before WL-93 queue a delete at the same version as the last update, so
+    /// this is the shape every delete from them arrives in — if it were rejected, deletes would never
+    /// propagate.
     /// </summary>
     [Fact]
     public async Task Push_DeleteAtSameVersion_TombstonesWithABumpAndPropagatesToTheOtherDevice()
@@ -321,6 +323,30 @@ public class SyncEndpointTests(AuthWebAppFixture fixture)
 
         using var db = fixture.CreateDbContext();
         Assert.Equal(3, (await db.Projects.SingleAsync(p => p.SyncId == syncId)).Version);
+    }
+
+    /// <summary>
+    /// Rule E covers deletes too: a delete at a lower version than a live row the same device
+    /// authored is already superseded by that device's own later write, so it is a replay, not a loss.
+    /// </summary>
+    [Fact]
+    public async Task Push_StaleDeleteFromTheAuthoringDevice_IsAcceptedWithoutTouchingTheRow()
+    {
+        var device = await NewDeviceAsync();
+        var syncId = Guid.NewGuid();
+
+        await PushAsync(device, ProjectChange(syncId, device.DeviceId, version: 3, SyncOperations.Create));
+        var push = await PushAsync(device, ProjectChange(syncId, device.DeviceId, version: 2, SyncOperations.Delete));
+
+        var result = push.Results.Single();
+        Assert.True(result.Accepted);
+        Assert.Equal(3, result.AuthoritativeVersion);
+        Assert.Null(result.AuthoritativePayloadJson);
+
+        using var db = fixture.CreateDbContext();
+        var row = await db.Projects.SingleAsync(p => p.SyncId == syncId);
+        Assert.False(row.IsDeleted);
+        Assert.Equal(3, row.Version);
     }
 
     [Fact]
@@ -433,9 +459,61 @@ public class SyncEndpointTests(AuthWebAppFixture fixture)
 
         await PushAsync(author, ProjectChange(syncId, author.DeviceId, version: 1, SyncOperations.Create));
 
-        // A client that has never synced (or has restarted — its cursor is in-memory, WL-92) sends
-        // no cursor and must get the full history rather than an error.
+        // A caller that has never synced and sends no cursor must get the full history rather than an
+        // error.
         Assert.Contains((await PullAsync(observer)).Changes, c => c.EntityId == syncId);
+    }
+
+    [Fact]
+    public async Task Pull_WithAnExplicitMinValueSince_ReturnsEverythingForTheUser()
+    {
+        var author = await NewDeviceAsync();
+        var observer = await NewDeviceAsync();
+        var syncId = Guid.NewGuid();
+
+        await PushAsync(author, ProjectChange(syncId, author.DeviceId, version: 1, SyncOperations.Create));
+
+        // What ApiSyncProvider actually sends on a first sync: DateTime.MinValue round-tripped through
+        // "o", with no offset, rather than an omitted parameter.
+        Assert.Contains((await PullAsync(observer, DateTime.MinValue)).Changes, c => c.EntityId == syncId);
+    }
+
+    /// <summary>
+    /// The pull cursor (see SyncService). A push stamps UpdatedAt per item but commits at the end of its
+    /// batch, so a pull that ran mid-batch could hand out a ServerTime past rows it could not yet see,
+    /// and no later incremental pull would ever deliver them. This holds the push side of the per-user
+    /// lock open over a stamped, uncommitted row — a push mid-batch — and checks the pull waits for it.
+    /// </summary>
+    [Fact]
+    public async Task Pull_DuringAnUncommittedPush_WaitsForItAndDeliversItsRows()
+    {
+        var author = await NewDeviceAsync();
+        var observer = await NewDeviceAsync();
+        var syncId = Guid.NewGuid();
+        var cursor = (await PullAsync(observer)).ServerTime;
+
+        using var db = fixture.CreateDbContext();
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        await db.Database.ExecuteSqlAsync(
+            $"SELECT pg_advisory_xact_lock({SyncService.AdvisoryLockClass}, {_sharedUserId})");
+        db.Projects.Add(new Project
+        {
+            UserId = _sharedUserId,
+            SyncId = syncId,
+            Version = 1,
+            OriginDeviceId = author.DeviceId,
+            CreatedAt = DateTime.UtcNow,
+            Name = "Mid-batch",
+        });
+        await db.SaveChangesAsync();
+
+        var pull = PullAsync(observer, cursor);
+        await Task.Delay(TimeSpan.FromMilliseconds(500));
+        Assert.False(pull.IsCompleted);
+
+        await transaction.CommitAsync();
+
+        Assert.Contains((await pull).Changes, c => c.EntityId == syncId);
     }
 
     [Fact]
