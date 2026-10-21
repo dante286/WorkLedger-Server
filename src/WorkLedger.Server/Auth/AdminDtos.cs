@@ -5,8 +5,8 @@ namespace WorkLedger.Server.Auth;
 // The admin JSON API's shapes, and the body of POST /auth/password/reset. They lived in
 // WorkLedger.Contracts until S11 and moved here because that library holds what the desktop client
 // speaks and nothing else: the client never calls /admin/* or /auth/password/reset, and its vendored
-// copy (pinned at 3d27c86) predates every record in this file, so the move broke no one. See
-// plans/S11-client-handoff.md.
+// copy was pinned at 3d27c86 — before every record in this file existed — so the move broke no one. It
+// re-vendored at eb743d4 without them (WL-174). See plans/S11-client-handoff.md.
 
 /// <summary>
 /// One row of <c>GET /admin/users</c> — every user on the deployment, as an operator's management

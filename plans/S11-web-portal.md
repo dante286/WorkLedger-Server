@@ -445,6 +445,17 @@ POST. All three are rate-limited under `AuthEndpoints.RateLimitPolicy` and carry
   `Reports/` are byte-identical to `1e343c8`, audited.
 - `plans/S11-client-handoff.md` exists and is sufficient on its own for client plan 12's re-vendor.
 
+**As built (audit, 2026-10-21).** Two deliberate deviations, recorded so they are not "fixed":
+
+- **`/portal/setup`'s claim branch also makes the claimed account the admin** (item 19's table says claim
+  only). A fresh setup with a legacy row would otherwise leave a server with an owner and no operator. The
+  page's XML doc says why and `PortalOnboardingTests` asserts `IsAdmin`.
+- **With `Web:Enabled=false` the cookie scheme and Data Protection are still registered in DI**; only the
+  pipeline is gated (no page, asset, header or EF-backed key ring is mapped). `PortalSetup`'s XML doc
+  explains why, and the observable behaviour item 25 asks for holds.
+
+The client applied the handoff — re-vendored at `eb743d4` (WL-174) and shipped client plan 12 in 0.3.0.
+
 ## Suggested commit messages
 
 One PR per group, off `main`:

@@ -1,5 +1,11 @@
 # S11 client handoff — the web portal, and the contract it leaves behind (WL-208)
 
+> **Applied, 2026-09-30.** The client re-vendored at `eb743d4` under WL-174 (client commit `58656a5`, the
+> first of client plan 12's commits) and shipped plan 12 in client 0.3.0 on 2026-10-02, with every call site
+> compiling unchanged as this document predicted. Its `Sync/Contracts/` is now byte-identical to
+> `src/WorkLedger.Contracts/` bar provenance headers, so **there is no drift**. The rest of this document is
+> the record of that re-vendor; the "current pin" below is the pin as it stood when this was written.
+
 **Server tickets:** epic [WL-179](https://mnisan.atlassian.net/browse/WL-179); this document is
 [WL-208](https://mnisan.atlassian.net/browse/WL-208) under [WL-185](https://mnisan.atlassian.net/browse/WL-185).
 **Client tickets:** epic [WL-173](https://mnisan.atlassian.net/browse/WL-173), client plan 12
@@ -13,7 +19,7 @@ commit, like every S-plan PR before it, so the hash survives the merge. Confirm 
 `git log -1 --format=%h -- src/WorkLedger.Contracts` on server `main`. If that ever prints something else,
 trust it over this line.)
 
-**Client's current pin:** `3d27c86`, recorded in `Sync/Contracts/README.md` and re-vendored 2026-09-15 under
+**Client's pin when this was written:** `3d27c86`, recorded in `Sync/Contracts/README.md` and re-vendored 2026-09-15 under
 WL-133. **The client never re-vendored at S10's `1e343c8`**, so this handoff covers **S10 and S11 together** and
 supersedes [S10-client-handoff.md](S10-client-handoff.md)'s step 0. That document remains the record of what S10
 changed on the wire (the invite gate on `/auth/register`, the no-longer-hardcoded `registrationRequiresSecret`).
@@ -148,7 +154,8 @@ These routes are now documented **compatibility routes** (see `AccountEndpoints`
 - **No new behaviour lands on them**, and new account features are portal-only.
 - **Removing them is a wire-breaking change** for every client build that still calls them, so they and the
   four records go at the next release that breaks the wire on purpose, not before. Until then they are
-  **server-only once client plan 12 ships**: vendored, compiled, uncalled, and not drift.
+  **server-only now that client plan 12 has shipped** (0.3.0): vendored, compiled, uncalled, and not drift.
+  They serve pre-0.3.0 clients and operators' scripts.
 
 `POST /auth/login`, `GET /auth/capabilities` and `GET /auth/whoami` are **not** compatibility routes. They are
 what the client still speaks, and `LoginRequest`, `LoginResponse`, `WhoAmIResponse`, `UserSummary` and

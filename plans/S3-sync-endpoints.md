@@ -295,6 +295,24 @@ Contracts types — but "S3 is done" will not mean "sync works end to end" until
 - Payload JSON is PascalCase out / case-insensitive in, and all timestamps are normalized to UTC.
 - All tests pass under Testcontainers in CI.
 
+**As built (audit, 2026-10-21).** Three findings, two of them fixes:
+
+- **The pull cursor could skip rows, permanently.** `PullAsync` read `ServerTime` *after* its queries (with a
+  comment claiming that was the safe order), and a push stamps `UpdatedAt` per item at `SaveChanges` but
+  commits only at the end of its batch. Either way a concurrent pull could hand out a cursor past a row it
+  could not see, and since WL-92 the client persists that cursor, so only a full pull would recover the row.
+  Push and pull are now **serialized per user** on a transaction-scoped advisory lock — push exclusive until
+  commit, pull shared — and pull reads `ServerTime` once the lock is held and before its queries. Pulls do not
+  wait on each other and other users never wait. Scope 3's boundary handling is now documented on
+  `SyncService`, beside the rules. Tested by `Pull_DuringAnUncommittedPush_WaitsForItAndDeliversItsRows`,
+  which fails without the lock.
+- **Rule E's same-device carve-out now covers deletes.** A delete below the version of a live row the same
+  device authored returned `ServerWins`; it is now an accepted no-op, as rule E says for any losing change from
+  the row's author.
+- **Still untested:** that a push rolls back as a whole. Nothing in the pipeline can be made to throw
+  mid-batch without fault injection the suite does not have. An explicit `since=0001-01-01T00:00:00.0000000`,
+  the form the client actually sends, is now tested.
+
 ## Suggested commit message
 
 ```

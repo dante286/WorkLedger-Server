@@ -11,7 +11,8 @@ public static class AuthEndpoints
 {
     /// <summary>
     /// The rate-limiting policy every credential-taking anonymous endpoint opts into — login,
-    /// registration and claim. Named here next to the endpoints that use it; configured in
+    /// registration, claim and password-reset redemption here, and the portal's anonymous credential
+    /// pages (<c>Web/PortalSetup.cs</c>). Named here next to the endpoints that use it; configured in
     /// <c>Program.cs</c>.
     /// </summary>
     public const string RateLimitPolicy = "auth-credentials";

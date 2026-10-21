@@ -58,8 +58,9 @@ public sealed class WorkLedgerDbContext(DbContextOptions<WorkLedgerDbContext> op
         {
             // SET NULL, not the cascade every other table here uses. An invite is a record of how an
             // account came to exist, so it has to survive the deletion of the admin who issued it and of
-            // the user who redeemed it — see Invite's XML doc. This is also what keeps the two
-            // account-deletion pipelines unchanged: Postgres nulls these columns itself.
+            // the user who redeemed it — see Invite's XML doc. This is also what keeps the
+            // account-deletion pipeline (AccountDeletion) unaware of this table: Postgres nulls these
+            // columns itself.
             b.HasOne<User>().WithMany()
                 .HasForeignKey(x => x.CreatedByUserId)
                 .OnDelete(DeleteBehavior.SetNull);
@@ -79,7 +80,7 @@ public sealed class WorkLedgerDbContext(DbContextOptions<WorkLedgerDbContext> op
             // Two different behaviours on purpose — see PasswordReset's XML doc. The reset dies with the
             // account it resets (nothing left to unlock), but outlives the admin who issued it (the
             // record of an intervention on an account that still exists is worth keeping). Cascading on
-            // UserId is also what keeps the account-deletion pipelines unaware of this table.
+            // UserId is also what keeps the account-deletion pipeline unaware of this table.
             b.HasOne<User>().WithMany()
                 .HasForeignKey(x => x.UserId)
                 .OnDelete(DeleteBehavior.Cascade);

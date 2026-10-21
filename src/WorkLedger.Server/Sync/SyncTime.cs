@@ -26,8 +26,9 @@ internal static class SyncTime
 
     /// <summary>
     /// Parses the pull cursor. A missing or empty value means "everything" — that is a legitimate
-    /// first request from a client that has never synced (or has restarted, since the client's
-    /// cursor is currently in-memory and resets to DateTime.MinValue — see WL-92), not an error.
+    /// first request from a client that has never synced, not an error. (The client persists the
+    /// <c>ServerTime</c> it is handed since WL-92, so a full pull is a first sync, not every restart;
+    /// it sends <c>DateTime.MinValue</c> explicitly rather than omitting the parameter.)
     /// AssumeUniversal covers a client that sends no offset; AdjustToUniversal normalizes one that
     /// does.
     /// </summary>

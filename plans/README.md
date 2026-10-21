@@ -3,9 +3,10 @@
 The client-side MVP plans (`plans/01`–`plans/07`) build sync up to the point where a real backend is
 required; client Plan 6 (`06-api-sync-provider.md`) wrote `ApiSyncProvider` against a
 documented-but-then-nonexistent REST contract. **These server plans built the thing that contract points
-at**, and the client now talks to it for real. The client's `plans/08`–`plans/10` are the other half of
-this release's cutover (login UI, capabilities, account management) and are blocked on
-[S9-client-handoff.md](S9-client-handoff.md).
+at**, and the client now talks to it for real. The client's `plans/08`–`plans/10` were the other half of
+the S6–S9 cutover (login UI, capabilities, account management), built from
+[S9-client-handoff.md](S9-client-handoff.md); its `plans/12` is the other half of S10–S11, built from
+[S11-client-handoff.md](S11-client-handoff.md). Both have shipped.
 
 Stack decision (2026-08-10): **C# / ASP.NET Core Minimal APIs on .NET 10, EF Core + Npgsql → PostgreSQL,
 JWT bearer auth, xUnit + Testcontainers, Docker Compose.** Chosen over the original README's FastAPI/SQLAlchemy
@@ -32,7 +33,7 @@ only at `WorkLedger.Contracts` (see S0).
 | S10 | [S10-multi-user-operations.md](S10-multi-user-operations.md) | WL-150 (WL-151…WL-155, subtasks WL-156…WL-172) (done) | S9 |
 | — | [S10-client-handoff.md](S10-client-handoff.md) | WL-172 (step 0 superseded by S11's handoff) | S10 |
 | S11 | [S11-web-portal.md](S11-web-portal.md) | WL-179 (WL-180…WL-185, subtasks WL-186…WL-208) (done) | S10 |
-| — | [S11-client-handoff.md](S11-client-handoff.md) | WL-208 → client plan 12 (WL-173); supersedes S10's step 0 | S11 |
+| — | [S11-client-handoff.md](S11-client-handoff.md) | WL-208 → client plan 12 (WL-173) (applied: re-vendored at `eb743d4`, WL-174; client 0.3.0); supersedes S10's step 0 | S11 |
 | S12 | [S12-email-delivery.md](S12-email-delivery.md) | WL-209 (WL-210…WL-214, subtasks WL-215…WL-230) | S11 |
 
 **S6–S9 are one release: user accounts.** S2 built auth for a single seeded account with devices enrolled by a
@@ -113,14 +114,20 @@ S11 moved the admin shapes out of the library rather than leaving them for the c
 difference between the client's pin and the new one is **three trailing, defaulted parameters** on two
 records — S10's `RegisterUserRequest.InviteToken` and `AuthCapabilitiesResponse.RegistrationAcceptsInvite`,
 and S11's `AuthCapabilitiesResponse.PortalUrl`. `Sync/`, `Payloads/` and `Reports/` are byte-identical to
-the pin, audited.
+the pin, audited. **The client applied it** — re-vendored at `eb743d4` on 2026-09-30 (WL-174) and shipped
+client plan 12 in client 0.3.0 — with no call site broken, as the handoff predicted.
+
+**S12 (email delivery) is planned, not built.** It changes nothing in `WorkLedger.Contracts`, so it has no
+client half and no handoff. A plans audit on 2026-10-21 checked S0–S11 against the code; the gaps it found
+and fixed are recorded as *As built (audit)* notes in the plans they belong to.
 
 ## Cross-repo contract handoff (important)
 
 `WorkLedger.Contracts` is authored in **this** repo (S0). The client **consumes it today**: client Plan 6
 shipped the real `ApiSyncProvider`, and rather than take a package it keeps a **byte-identical vendored copy**
 at `Sync/Contracts/`, with the source commit recorded in `Sync/Contracts/README.md` — pinned at server
-`3d27c86`, re-vendored 2026-09-15 under WL-133. (`ReportDtos.cs` is deliberately not vendored; the client
+`eb743d4`, re-vendored 2026-09-30 under WL-174 (the previous pin, `3d27c86`, was WL-133's on 2026-09-15),
+so there is no drift today. (`ReportDtos.cs` is deliberately not vendored; the client
 computes its own reports and never calls `/reports/*`.) A cross-repo `ProjectReference` was rejected because the client's CI checks out
 only its own repo, and this repo publishes no package.
 
@@ -136,7 +143,7 @@ pass at the end of them, and [S11-client-handoff.md](S11-client-handoff.md) the 
 both. **From S11 the library has a scope rule: `WorkLedger.Contracts` holds what the desktop client speaks,
 and nothing else.** Shapes used only by server-side surfaces — the `/admin/*` JSON API, the portal — live in
 `WorkLedger.Server`. S11 applies it by moving `AdminDtos.cs` and `ResetPasswordRequest` out, which breaks no
-one because the client's pin (`3d27c86`) predates both; records the client *has* vendored stay until the next
+one because the client's pin at the time (`3d27c86`) predated both; records the client *has* vendored stay until the next
 deliberate wire-breaking release, even where the client stops calling them. Publishing the package (S0 sketched the GitHub Packages step) is the follow-up
 that would remove this whole class of problem. Do **not** modify the client repo as part of these server
 plans — read it, coordinate, and land client edits as client-repo work.

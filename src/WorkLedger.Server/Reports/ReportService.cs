@@ -5,6 +5,14 @@ using WorkLedger.Server.Data;
 namespace WorkLedger.Server.Reports;
 
 /// <summary>
+/// The weekly report plus the (day × project × task) grid it was folded from. The DTO's three
+/// breakdowns cannot be re-crossed back into that grid — a per-project total and a per-day total do not
+/// say which project the Tuesday hours belonged to — and the CSV export is exactly that grid, so it is
+/// carried alongside rather than re-queried.
+/// </summary>
+internal sealed record WeeklyReport(WeeklyReportDto Dto, IReadOnlyList<ReportBucket> Grid);
+
+/// <summary>
 /// The reporting rules, in one place. All three endpoints share them; the WHERE clause in
 /// <see cref="ReportQuery"/> is their SQL form.
 ///
@@ -40,14 +48,6 @@ namespace WorkLedger.Server.Reports;
 /// spanning midnight is not split across two days — splitting would be more accurate but would disagree
 /// with the client for no benefit anyone asked for. Days and weeks are UTC; the caller localizes.</para>
 /// </summary>
-/// <summary>
-/// The weekly report plus the (day × project × task) grid it was folded from. The DTO's three
-/// breakdowns cannot be re-crossed back into that grid — a per-project total and a per-day total do not
-/// say which project the Tuesday hours belonged to — and the CSV export is exactly that grid, so it is
-/// carried alongside rather than re-queried.
-/// </summary>
-internal sealed record WeeklyReport(WeeklyReportDto Dto, IReadOnlyList<ReportBucket> Grid);
-
 internal sealed class ReportService(WorkLedgerDbContext db)
 {
     private readonly ReportQuery _query = new(db);

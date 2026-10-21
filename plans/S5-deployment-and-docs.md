@@ -74,6 +74,12 @@ README's "Docker Compose for local and production deployments / homelab setups" 
 - The client repo README's backend section is corrected (as a separate client-repo change).
 - A tagged release exists; CI builds the image on tag.
 
+**As built (audit, 2026-10-21).** `Jwt__Issuer`, `Jwt__Audience` and `Database__MigrateOnStartup` were
+documented in the README but never passed through `docker-compose.yml`, so setting them in `.env` did
+nothing under compose; they are now passed through blank like every other optional key, and `Program.cs`
+treats blank as unset for them and for `Jwt__ExpiryDays` (whose `:-365` copy of the default is gone).
+`.env.*` is git-ignored, bar `.env.example`.
+
 ## Suggested commit message(s)
 
 ```

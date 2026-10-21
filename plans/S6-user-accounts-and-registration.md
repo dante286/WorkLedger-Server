@@ -192,6 +192,10 @@ client handoff in one pass.
 - A fresh database starts with zero users; nothing is seeded.
 - `/auth/register-device` still issues a working token when exactly one user exists, and 410s beyond that.
 
+**As built (audit, 2026-10-21).** "A fresh database starts with zero users" was true but unproven — every
+fixture either skipped migrate-on-boot or truncated first. `FreshDatabaseStartupTests` boots a host with
+`Database:MigrateOnStartup=true` against an empty container and asserts no `Users` or `Devices` rows.
+
 ## Suggested commit message
 
 ```

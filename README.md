@@ -79,9 +79,12 @@ $EDITOR .env
 docker compose up -d
 ```
 
-That builds the API image, starts Postgres, waits for it to pass its healthcheck, then starts the API —
-which applies the EF migrations before it serves anything. A fresh host needs no other provisioning
-step, and no account: the database comes up empty and the first registration creates its first user.
+That pulls the published API image (`ghcr.io/dante286/workledger-api`, tagged `WORKLEDGER_VERSION`,
+`latest` by default), starts Postgres, waits for it to pass its healthcheck, then starts the API —
+which applies the EF migrations before it serves anything. To run this checkout instead of a published
+release, `docker compose up -d --build` builds the image from source. A fresh host needs no other
+provisioning step, and no account: the database comes up empty and the first registration creates its
+first user.
 
 ```bash
 curl http://localhost:8080/health      # {"status":"ok","utc":"..."}
@@ -167,8 +170,8 @@ server.
 Two steps, and they are different kinds of thing. **Registration is a user-level act** gated by the
 signup secret, done once. **Signing in is per device** and is the only source of a token. (These account
 routes are *compatibility routes* since the portal arrived: they keep working exactly as they did, for
-desktop builds already in the field and for your scripts, but new account features land in the portal
-only.)
+desktop builds older than client 0.3.0 and for your scripts, but new account features land in the
+portal only.)
 
 Ask the server what its rules are first — a client is expected to do this, and it costs nothing:
 
@@ -179,12 +182,14 @@ curl http://localhost:8080/auth/capabilities
 #  "registrationAcceptsInvite":true,"portalUrl":null}
 ```
 
-`portalUrl` is `https://<Web__PublicBaseUrl>/portal` while the portal is on, and `null` while it is off.
+`portalUrl` is `<Web__PublicBaseUrl>/portal` while the portal is on, and `null` while it is off.
 
 Create the account. The secret goes in the `X-Bootstrap-Secret` header; nothing else on the API reads
 it:
 
 ```bash
+Bootstrap__Secret=$(grep '^Bootstrap__Secret=' .env | cut -d= -f2-)   # the value you put in .env
+
 curl -X POST http://localhost:8080/auth/register \
   -H "X-Bootstrap-Secret: $Bootstrap__Secret" \
   -H 'Content-Type: application/json' \
@@ -196,10 +201,12 @@ No token comes back, deliberately: there is no device to bind one to yet. Now si
 passing that device's own stable id:
 
 ```bash
-curl -X POST http://localhost:8080/auth/login \
+# Answers {"token":"eyJ...","expiresAtUtc":"2027-...","user":{"id":1,"email":"sam@example.com",...}};
+# jq keeps just the token for the calls below.
+token=$(curl -s -X POST http://localhost:8080/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"email":"sam@example.com","password":"correct-horse-battery","deviceId":"laptop-01","deviceLabel":"Work laptop"}'
-# {"token":"eyJ...","expiresAtUtc":"2027-...","user":{"id":1,"email":"sam@example.com",...}}
+  -d '{"email":"sam@example.com","password":"correct-horse-battery","deviceId":"laptop-01","deviceLabel":"Work laptop"}' \
+  | jq -r .token)
 
 curl http://localhost:8080/auth/whoami -H "Authorization: Bearer $token"
 # {"userId":1,"email":"sam@example.com","displayName":"Sam","deviceId":"laptop-01"}
@@ -337,16 +344,16 @@ curl -X POST http://localhost:8080/auth/password/reset \
 | `GET /auth/capabilities` | none | This server's account policy, so a client can render the truth instead of guessing: whether registration is open, which credentials it accepts (the secret, an invite, or both), the minimum password length, whether an unclaimed account is waiting, the lockout numbers, and `portalUrl` — where the web portal is, or `null` when it is off. Configuration, not secrets. |
 | `POST /auth/register` | `X-Bootstrap-Secret` header **or** an `inviteToken` in the body | Create a user. `201` and the user; **no token** — tokens are device-scoped. `403` registration disabled, `401` neither credential accepted, `400` bad email or password, `409` email taken, and `409` for an invite that is expired, spent, or addressed to somebody else. |
 | `POST /auth/claim` | `X-Bootstrap-Secret` header | Attach an email and password to a pre-user-accounts account, in place, keeping its data and its devices. `409` when there is nothing claimable. Deliberately **not** gated by `REGISTRATIONS_ALLOWED`. |
-| `POST /auth/login` | none (credentials in the body) | **The only source of a token.** Enrols the request's `deviceId` under the authenticated user and mints a JWT for that `(user, device)`. `401` for any bad credential, `423` locked out, `429` rate-limited. |
+| `POST /auth/login` | none (credentials in the body) | **The only source of a token.** Enrols the request's `deviceId` under the authenticated user and mints a JWT for that `(user, device)`. `400` without a `deviceId`, `401` for any bad credential, `423` locked out, `429` rate-limited. |
 | `GET /auth/whoami` | bearer | The user and device the caller's token resolves to. |
-| `POST /auth/password` | bearer | Change the password. Re-verifies the current one (`401` if wrong), then bumps the security stamp — **killing every token, the caller's included** — and hands back a replacement. |
+| `POST /auth/password` | bearer | Change the password. Re-verifies the current one (`401` if wrong), then bumps the security stamp — **killing every token, the caller's included** — and hands back a replacement. `400` for a new password below the minimum; `409` for the unclaimed pre-user-accounts row, which has no password to change. |
 | `POST /auth/password/reset` | none (a reset token in the body) | Spend a token an admin issued out of band. `204` and **no token back**: this call names no device, so every device signs in again. `400` for a token that is unknown, expired or already spent — the same `400`, deliberately — and for a new password below the minimum. |
 | `GET /auth/devices` | bearer | Every device signed in to this account, with `isCurrent` marking the caller's. |
 | `DELETE /auth/devices/{deviceId}` | bearer | Revoke one device's access. `204`; `404` for an id this user does not own. Leaves that device's synced rows alone — they belong to the user, not the device. Removing your own is allowed and means "sign this device out". |
 | `POST /auth/logout-all` | bearer | Bump the security stamp: every device signed out at once, with a fresh token returned for the caller. |
-| `DELETE /auth/account` | bearer | Hard-delete the account and everything under it. Two independent gates: the current password (`401`) and a typed `confirmEmail` (`400`). Immediate and irreversible. |
-| `POST /sync/push` | bearer | Submit a batch of create/update/delete changes; returns one result per change, in request order. |
-| `GET /sync/pull?since=<iso-8601>` | bearer | Changes from other devices with `UpdatedAt > since`. Omit `since` for everything. |
+| `DELETE /auth/account` | bearer | Hard-delete the account and everything under it. Two independent gates: the current password (`401`) and a typed `confirmEmail` (`400`). `409` for the unclaimed row. Immediate and irreversible. |
+| `POST /sync/push` | bearer | Submit a batch of create/update/delete changes; returns one result per change, in request order. `400` without a `changes` array. |
+| `GET /sync/pull?since=<iso-8601>` | bearer | Changes from other devices with `UpdatedAt > since`. Omit `since` for everything; a `since` that is not an ISO-8601 timestamp is a `400`. |
 | `GET /reports/weekly?weekOf=<yyyy-MM-dd>` | bearer | One ISO week (Monday–Sunday, UTC), across every device of the signed-in user. |
 | `GET /reports/projects/{projectSyncId}?from=&to=` | bearer | One project over an optional inclusive UTC date range. |
 | `GET /reports/tasks/{taskSyncId}?from=&to=` | bearer | One task, with a per-day breakdown. |
@@ -355,27 +362,31 @@ All three report endpoints also take `?format=csv` (see [Reports](#reports)).
 
 **Compatibility routes.** `POST /auth/register`, `POST /auth/claim`, `POST /auth/password`,
 `POST /auth/password/reset`, `GET /auth/devices`, `DELETE /auth/devices/{deviceId}`,
-`POST /auth/logout-all` and `DELETE /auth/account` keep working exactly as described above — for desktop
-builds already in the field and for scripts — but account management now lives in
-[the web portal](#the-web-portal), and **no new behaviour lands on these routes**. They go at the next
-deliberately wire-breaking release, not before. `POST /auth/login`, `GET /auth/capabilities` and
-`GET /auth/whoami` are what the desktop client speaks and are not on the list.
+`POST /auth/logout-all` and `DELETE /auth/account` keep working exactly as described above, for desktop
+builds older than client 0.3.0 and for scripts. (0.3.0 and later have no account UI and only sign in.)
+Account management now lives in [the web portal](#the-web-portal), and **no new behaviour lands on
+these routes**. They go at the next deliberately wire-breaking release, not before. `POST /auth/login`,
+`GET /auth/capabilities` and `GET /auth/whoami` are what the desktop client speaks and are not on the
+list.
 
-**Operator routes.** Every one of these is `401` without a token and `403` with a non-admin's, enforced
-by an authorization policy whose claim is resolved from the database on each request rather than read
-out of the JWT — so a demotion bites on the very next request. None of them exists on a deployment
-until somebody is an admin, and nothing here is reachable with the bootstrap secret alone.
+**Operator routes.** Every one of these is `401` without a token, and every one but `/admin/bootstrap`
+is `403` with a non-admin's, enforced by an authorization policy whose claim is resolved from the
+database on each request rather than read out of the JWT — so a demotion bites on the very next
+request. `/admin/bootstrap` cannot be behind that policy, since it exists for the state in which nobody
+satisfies it; it wants the secret as well as a token instead. The routes are always mapped — on a
+deployment with no admin they answer `403` to everyone — and nothing here is reachable with the
+bootstrap secret alone.
 
 | Endpoint | Purpose |
 |---|---|
 | `POST /admin/bootstrap` | Promote the calling user. Wants the bearer token **and** `X-Bootstrap-Secret`: the token says who, the secret says operator. `204`; `401` without both; `409` once any admin exists. |
 | `GET /admin/users` | Every user, with device count, last login, and whether they are an admin, currently locked out, or suspended. |
-| `POST /admin/users/{id}/unlock` | Clear a failed-login lockout. `204`, also when they were not locked. |
-| `POST /admin/users/{id}/disable`, `POST /admin/users/{id}/enable` | Suspend or restore an account. A suspended user's existing tokens are refused on their next request, and their sign-in answers the same `401` as a wrong password — no new way to discover who has an account here. `204` (also if already in that state); `409` on yourself. |
-| `POST /admin/users/{id}/admin`, `DELETE /admin/users/{id}/admin` | Promote or demote. `204`; `409` when it would leave the server with no administrator. Demoting *yourself* is allowed once someone else can administer — that is the handover. |
+| `POST /admin/users/{id}/unlock` | Clear a failed-login lockout. `204`, also when they were not locked; `404` for an unknown id. |
+| `POST /admin/users/{id}/disable`, `POST /admin/users/{id}/enable` | Suspend or restore an account. A suspended user's existing tokens are refused on their next request, and their sign-in answers the same `401` as a wrong password — no new way to discover who has an account here. `204` (also if already in that state); `404` for an unknown id; `409` for suspending yourself or the last administrator. |
+| `POST /admin/users/{id}/admin`, `DELETE /admin/users/{id}/admin` | Promote or demote. `204`; `404` for an unknown id; `409` when it would leave the server with no administrator. Demoting *yourself* is allowed once someone else can administer — that is the handover. |
 | `POST /admin/users/{id}/password-reset` | Mint a single-use reset token and return it **once**. `200`; `404` for an unknown id; `409` for the unclaimed pre-user-accounts row, which has no password to reset. A second issue invalidates the first. |
-| `DELETE /admin/users/{id}` | Hard-delete another user and everything under them, gated on a typed `confirmEmail` that must match **that** account (`400`). `409` on yourself — use `DELETE /auth/account`, which re-verifies your password. |
-| `POST /admin/invites` | Create an invite. `201`, and the token appears **here and nowhere else**; the server stores only a SHA-256 of it. Optional `email` binds it to one address, `expiresInDays` overrides `Auth__InviteExpiryDays`, `note` is for your own benefit. |
+| `DELETE /admin/users/{id}` | Hard-delete another user and everything under them, gated on a typed `confirmEmail` that must match **that** account (`400`). `404` for an unknown id; `409` on yourself — use `DELETE /auth/account`, which re-verifies your password — or on the last administrator. |
+| `POST /admin/invites` | Create an invite. `201`, and the token appears **here and nowhere else**; the server stores only a SHA-256 of it. Optional `email` binds it to one address, `expiresInDays` overrides `Auth__InviteExpiryDays`, `note` is for your own benefit. `400` for a malformed `email` or an `expiresInDays` below 1. |
 | `GET /admin/invites` | Every invite — metadata, never the token. Redeemed rows are kept: an invite is the record of how an account came to exist. |
 | `DELETE /admin/invites/{id}` | Revoke an unredeemed invite. `204`; `404` unknown; `409` if it has already been redeemed, since deleting it would erase that record and it is unusable anyway. |
 
@@ -391,8 +402,9 @@ Administration pages call exactly the same code, with the same guards and audit 
 | `/portal/setup` | anyone holding `Bootstrap__Secret` | First run: create the first account, claim a pre-user-accounts install, or promote yourself when nobody is an admin. `404` once an admin exists. |
 | `/portal/register` | anyone holding an invite link (or the secret, while `Auth__SignupSecretEnabled`) | Create an account and sign straight in. |
 | `/portal/reset` | anyone holding a reset link | Choose a new password; every device is signed out, and nobody is signed in. |
+| `/portal/denied`, `/portal/deleted` | anyone | Informational: where a non-admin lands on an Administration page, and where a just-deleted account lands once its session has gone with it. |
 | `/portal`, `/portal/account/devices`, `/portal/account/security`, `/portal/account/delete` | signed in | Your account, your devices, password change and sign-out-everywhere, and account deletion. |
-| `/portal/admin/users`, `/portal/admin/invites` | signed in **and** an admin | Everything the operator routes above do. |
+| `/portal/admin`, `/portal/admin/users`, `/portal/admin/invites` | signed in **and** an admin | An index of the two, then everything the operator routes above do. |
 
 ## Configuration
 
@@ -409,12 +421,17 @@ the `Jwt:SigningKey` key.
 | `POSTGRES_PASSWORD` | Password for the bundled Postgres. Baked into the volume by `initdb` on the first boot — changing it later needs an `ALTER USER`, not an edit here. |
 
 A database must be reachable one of two ways: the four `POSTGRES_HOST` / `POSTGRES_DB` /
-`POSTGRES_USER` / `POSTGRES_PASSWORD` variables (what compose passes, so the password lives in exactly
-one place), or a full `ConnectionStrings__Postgres` DSN, which wins when set and is how you point at an
-external or managed Postgres. A blank value counts as unset. The resolution and its failure message live
-in `src/WorkLedger.Server/Data/PostgresConnection.cs`.
+`POSTGRES_USER` / `POSTGRES_PASSWORD` variables, plus an optional `POSTGRES_PORT` (`5432` when unset)
+— what compose passes, so the password lives in exactly one place — or a full
+`ConnectionStrings__Postgres` DSN, which wins when set and is how you point at an external or managed
+Postgres. A blank value counts as unset. The resolution and its failure message live in
+`src/WorkLedger.Server/Data/PostgresConnection.cs`.
 
-**Optional:**
+**Optional.** `docker-compose.yml` passes each of the server's optional keys through **blank** when
+`.env` does not set it, and the server treats a blank value as unset — so leaving a key out and setting
+it empty both mean the default below. (`POSTGRES_DB`/`POSTGRES_USER`, `API_PORT`/`API_BIND` and
+`WORKLEDGER_VERSION` are compose's own, with the defaults written into the compose file;
+`ASPNETCORE_ENVIRONMENT` is set in the image and compose does not pass it at all.)
 
 | Variable | Default | Notes |
 |---|---|---|
@@ -426,9 +443,9 @@ in `src/WorkLedger.Server/Data/PostgresConnection.cs`.
 | `Auth__InviteExpiryDays` | `14` | How long an invite lasts when the issuing admin does not choose. `expiresInDays` on the request overrides it per invite. **There is no value meaning "never"** — an invite that cannot expire is a standing credential, which is the thing invites exist to stop being. |
 | `Auth__PasswordResetExpiryHours` | `24` | How long an admin-issued reset token lasts. Hours where an invite gets days, and on purpose: an invite is arranged in advance, a reset is handed over during a conversation happening now. |
 | `Auth__MinPasswordLength` | `12` | Shortest password `/auth/register`, `/auth/claim`, `/auth/password` and `/auth/password/reset` accept. Reported by `/auth/capabilities`. |
-| `Auth__MaxFailedLogins` | `5` | Consecutive failed sign-ins before an account locks. `0` disables the lockout — it does not mean "lock on the first failure". |
+| `Auth__MaxFailedLogins` | `5` | Consecutive failed sign-ins before an account locks. `0` disables the lockout — it does not mean "lock on the first failure" — and does so from the next request, even for an account inside a window stamped while it was armed. |
 | `Auth__LockoutMinutes` | `15` | How long that lockout lasts. The failure counter resets once the window expires, so an account cannot end up locked permanently. |
-| `Auth__LoginRateLimitPerMinute` | `10` | Per-IP limit on `/auth/register`, `/auth/claim`, `/auth/login` and `/auth/password/reset`; over it is `429` with `Retry-After`. `0` disables it. Which address it partitions on depends on `Network__TrustedProxies` below. |
+| `Auth__LoginRateLimitPerMinute` | `10` | Per-IP limit on `/auth/register`, `/auth/claim`, `/auth/login` and `/auth/password/reset`, and on the portal's credential forms — sign-in, setup, register, reset, password change and account deletion — which share the same bucket (a `GET` that only renders a form spends nothing); over it is `429` with `Retry-After`. `0` disables it. Which address it partitions on depends on `Network__TrustedProxies` below. |
 | `Network__TrustedProxies` | *(unset)* | Comma-separated IP addresses and CIDR blocks of the reverse proxies whose `X-Forwarded-For` this deployment believes. **Unset means no forwarded-header processing at all** — the middleware is not even registered — so the rate limiter partitions on the socket address, as it always has. Set it and each caller behind the proxy gets their own bucket. A malformed entry fails startup naming the value; see [Putting it behind TLS](#putting-it-behind-tls). |
 | `Auth__StampCacheSeconds` | `30` | How long a token's revocation check is cached. **This is the revocation lag**, and only for revocations that happen elsewhere: the endpoints that revoke evict the entry themselves, so the common case is immediate. `0` checks the database on every authenticated request. |
 | `Web__Enabled` | `false` | Serve [the web portal](#the-web-portal) under `/portal`. Off means absent: no page, cookie or route, and every existing request behaves as before. |
@@ -436,7 +453,7 @@ in `src/WorkLedger.Server/Data/PostgresConnection.cs`.
 | `Web__SessionHours` | `8` | A portal session's sliding lifetime. There is no "remember me". |
 | `Database__MigrateOnStartup` | `true` | Set `false` to apply migrations as a separate step instead (see [Schema changes](#schema-changes)). |
 | `API_PORT` / `API_BIND` | `8080` / `0.0.0.0` | Host side of the published port. `API_BIND=127.0.0.1` when a reverse proxy is the only thing that should reach it. |
-| `WORKLEDGER_VERSION` | `latest` | Image tag to run, and the version stamped into a local build. |
+| `WORKLEDGER_VERSION` | `latest` | Image tag to run. It is also the version a local `docker compose up --build` stamps into `GET /`, which reads `0.0.0-dev` when it is unset. |
 | `ASPNETCORE_ENVIRONMENT` | `Production` (set in the image) | `Development` turns on the developer exception page — do not use it on a deployed instance. |
 
 ## Sync
@@ -449,13 +466,21 @@ comment before changing merge behaviour. In outline:
 - Higher `Version` wins. A losing push is answered with the server's own version and payload, so the
   pusher can adopt the winner without waiting for its next pull.
 - Deletes are accepted at `>=` and stored one version higher, so a tombstone strictly beats every
-  peer's copy (a deliberate deviation from strict LWW, forced by the client — WL-93).
-- Replays are accepted as no-ops with no database write at all: `UpdatedAt` is the pull cursor, so an
-  incidental write would re-broadcast the row to every other device.
+  peer's copy (a deliberate deviation from strict LWW). The client once needed the `>=` because its
+  deletes did not bump the version; WL-93 fixed that, and the rule stays for client builds older than
+  it — reverting it is a release decision, not a cleanup.
+- Replays — a change at or below the server's version from the device that authored the live row
+  (strictly below, for a delete), or a delete at or below an existing tombstone's version — are
+  accepted as no-ops with no database write at all: `UpdatedAt` is the pull cursor, so an incidental
+  write would re-broadcast the row to every other device.
 - Results are **positional** — one per submitted change, in request order — because one batch can carry
   create → update → delete for the same entity. A batch is applied parents-first (project → task → time
   entry) inside one transaction, but answered in the order it arrived.
 - A pull never returns the calling device its own writes.
+- Push and pull are serialized **per user** on a Postgres advisory lock, so a pull may briefly wait for
+  the same user's in-flight push to commit; pulls never wait on each other, and other users never wait
+  at all. That is what stops a pull handing out a cursor past rows a concurrent push had not yet
+  committed, which would otherwise never be pulled incrementally.
 
 ## Reports
 
@@ -533,9 +558,13 @@ worth knowing before an emergency:
 ### Upgrading
 
 ```bash
-git pull                                  # or just edit WORKLEDGER_VERSION in .env
-docker compose pull                       # if running a published GHCR tag
+# A published release: set WORKLEDGER_VERSION in .env (or stay on latest), then
+docker compose pull                       # plain `up` reuses an image it already has
 docker compose up -d                      # recreates the api container
+
+# Or from source: `up` does not rebuild without --build
+git pull
+docker compose up -d --build
 ```
 
 Migrations are applied by the API on boot, so an upgrade that adds a column needs no separate step. Take
@@ -551,8 +580,8 @@ after this release needs nothing: its first account is already an admin.
 **Upgrading onto a release with the web portal** changes nothing until you set `Web__Enabled=true`.
 The migration adds one table, `DataProtectionKeys`, which stays empty while the portal is off. Turning
 the portal on is the [two settings in The web portal](#the-web-portal) and a restart; existing desktop
-installs keep their tokens and carry on syncing. The JSON account routes they may still use are
-unchanged.
+installs keep their tokens and carry on syncing. The JSON account routes a pre-0.3.0 client may still
+use are unchanged.
 
 ### Upgrading from a pre-user-accounts deployment
 
@@ -579,6 +608,7 @@ curl http://localhost:8080/auth/capabilities
 # ..."hasUnclaimedAccount":true...
 
 # 4. Take ownership of it: your email, a password of at least Auth__MinPasswordLength.
+Bootstrap__Secret=$(grep '^Bootstrap__Secret=' .env | cut -d= -f2-)
 curl -X POST http://localhost:8080/auth/claim \
   -H "X-Bootstrap-Secret: $Bootstrap__Secret" \
   -H 'Content-Type: application/json' \
@@ -602,8 +632,8 @@ Two details worth knowing:
   claimed account's display name (`"Default"` above, if you never changed it).
 - **Nothing forces you to close signup**, but you probably want to. Once your account exists, set
   `REGISTRATIONS_ALLOWED=false` in `.env` and `docker compose up -d`: `POST /auth/register` then answers
-  `403`, `/auth/capabilities` advertises it so clients hide their registration UI, and the bootstrap
-  secret stops mattering for signup. `POST /auth/claim` deliberately keeps working — an operator must
+  `403`, `/auth/capabilities` advertises it so a client or script can tell before it tries, and the
+  bootstrap secret stops mattering for signup. `POST /auth/claim` deliberately keeps working — an operator must
   always be able to claim their own data.
 
 ### Recovering a lost password
@@ -793,8 +823,10 @@ before pointing it at a deployment you care about:
 
 - **Registration has to be open** (`REGISTRATIONS_ALLOWED`), because the run starts by creating that
   account. Against a deployment with signup closed it stops at that step and says so.
-- It spends seven requests on the per-IP credential rate limit (`Auth__LoginRateLimitPerMinute`, 10 by
-  default), so two runs inside the same minute can trip a `429`.
+- It spends POSTs on the per-IP credential rate limit (`Auth__LoginRateLimitPerMinute`, 10 by
+  default): nine on a fresh volume, where the multi-user leg runs, and six where it is skipped — one
+  fewer of each with `-KeepAccount`. One run fits the default with a request to spare; two inside the
+  same minute can trip a `429`.
 - **One row is left in `Invites` per run**, and that is the feature rather than a leak: both user
   references are `ON DELETE SET NULL` so the invite outlives the accounts, and a redeemed invite
   cannot be revoked. Each run leaves one redeemed row with two null user ids.
@@ -821,9 +853,10 @@ look around; that account and its rows then stay until you delete them or drop t
   tokens, and every portal form carries an antiforgery token.
 - **Portal responses are hardened, and only portal responses.** A `Content-Security-Policy` with no
   `unsafe-inline` (the pages use no inline script or style), `Referrer-Policy: no-referrer`,
-  `X-Content-Type-Options: nosniff` and `Cache-Control: no-store`. The portal's sign-in and link pages
-  share the per-IP credential rate limit with `/auth/login`, and a portal sign-in spends the same
-  per-account lockout budget as a device's.
+  `X-Content-Type-Options: nosniff` and `Cache-Control: no-store`. The portal's credential forms —
+  sign-in, setup, register, reset, password change and account deletion — share the per-IP credential
+  rate limit with `/auth/login`, and a portal sign-in spends the same per-account lockout budget as a
+  device's.
 - **Links are never built from `Host`.** Invite and reset links come from `Web__PublicBaseUrl` alone,
   carry their token in the fragment, and are spent only by a form post — never by opening them.
 - **Every query is scoped to the token's user**, and a route id belonging to another user is a 404
@@ -833,10 +866,11 @@ look around; that account and its rows then stay until you delete them or drop t
   The version prefix means an iteration-count bump years from now is a detectable format change rather
   than a silent lockout: a hash that is valid but outdated is replaced on the next successful login.
   Passwords are never logged and never returned.
-- **Sign-in failures are uniform.** A wrong password, an unknown email and a credential-less account all
-  answer the same `401`, so login cannot be used to find out who has an account here. (Registration is
-  frank about a duplicate email, because getting that far already required the signup secret. The
-  asymmetry is deliberate, and `AuthEndpoints` says so at the line that does it.)
+- **Sign-in failures are uniform.** A wrong password, an unknown email, a credential-less account and
+  a suspended one all answer the same `401`, so login cannot be used to find out who has an account
+  here. (Registration is frank about a duplicate email, because getting that far already required the
+  signup secret or an invite. The asymmetry is deliberate, and the XML docs on `CredentialCheck` and
+  `RegistrationService` say why.)
 - **Two independent brakes on guessing.** `Auth__MaxFailedLogins` consecutive failures lock one account
   for `Auth__LockoutMinutes` (`423` with `Retry-After`), and `Auth__LoginRateLimitPerMinute` caps the
   credential endpoints per IP (`429` with `Retry-After`). The lockout defends one account; the rate
@@ -844,7 +878,8 @@ look around; that account and its rows then stay until you delete them or drop t
   window expires, so an account can never end up permanently locked.
 - **Tokens can be killed.** Every token carries a `stamp` claim, and every authenticated request
   re-checks the token's device row joined to its user — so a token stops working the moment its device
-  is removed, its user is deleted, or the stamp changes (a password change, or `POST /auth/logout-all`).
+  is removed, its user is deleted or suspended (`User.DisabledAtUtc`), or the stamp changes (a password
+  change, a redeemed password reset, or `POST /auth/logout-all`).
   That check is cached for `Auth__StampCacheSeconds` (30 by default), and the endpoints that revoke
   evict the entry themselves, so the TTL is only the lag for a revocation that happened elsewhere.
 - **Re-authentication for the destructive things.** Changing a password and deleting an account both
@@ -860,8 +895,8 @@ look around; that account and its rows then stay until you delete them or drop t
   resolved **from the database on every request**, never from the JWT — a year-long token must not
   carry a year-long privilege. So an admin's access dies exactly as any other token does, and demoting,
   suspending or deleting someone takes effect on their very next request. Each admin write logs one
-  line carrying the actor's and target's ids and the action, and **never an email address**, for the
-  same reason the request log carries no headers.
+  line carrying the actor's id, the action and the target user's or invite's id, and **never an email
+  address**, for the same reason the request log carries no headers.
 - **No admin route can strand the deployment.** Demoting, suspending or deleting the last
   administrator through `/admin/*` is a `409`, and `POST /admin/bootstrap` refuses once any admin
   exists — so neither route can be used to take a server over. Admins cannot suspend or delete their
@@ -880,8 +915,8 @@ look around; that account and its rows then stay until you delete them or drop t
 ### What it deliberately does not do
 
 - **No email verification.** An email address is an identifier here, not a verified one; the server
-  sends no mail and never contacts the address. Anyone holding the signup secret can register any
-  address they like.
+  sends no mail and never contacts the address. Anyone holding the signup secret, or an invite not
+  bound to an address, can register any address they like.
 - **No self-service password reset.** There is an *admin-issued* one — the portal's reset link, or `POST
   /admin/users/{id}/password-reset` — which you hand over out of band, but no
   `forgot my password` a user can drive alone, because that needs mail the server cannot send. A
@@ -914,9 +949,13 @@ look around; that account and its rows then stay until you delete them or drop t
   tasks, projects, devices and the user row in one transaction. There is no grace period, no soft delete
   and no undo, and the only export is `/reports/*?format=csv`, which covers recorded time rather than
   the raw rows — take one before deleting, and keep your dumps.
-- **No audit trail** beyond the request log. Account deletion writes a single warning line carrying the
-  user id and the per-table counts — never the email, for the same reason the request log records no
-  headers.
+- **No audit table.** What there is lives in the log and one table. Each admin write logs one
+  `AdminAction` line naming the actor, the action and the target user or invite id; account deletion
+  writes a single warning line carrying the user id and the per-table counts — never an email, for
+  the same reason the request log records no headers. The `Invites` table keeps who issued and who
+  redeemed each invite, by id, until that account is deleted. The log lines last only as long as you
+  keep the container's logs, and nothing records sign-ins beyond each user's last login and each
+  device's last-seen time.
 ## Development
 
 Local development runs the app on the host against a Postgres container. `docker-compose.dev.yml` is the
@@ -1002,8 +1041,11 @@ prevent. Nothing detects automatically that the copy has fallen behind; check wi
 
 **`WorkLedger.Contracts` holds what the desktop client speaks, and nothing else** (S11). The admin API's
 request and response shapes and `ResetPasswordRequest` live in the server (`Auth/AdminDtos.cs`), because
-the client never calls `/admin/*` or `/auth/password/reset`. The current handoff — what the client
-re-vendors and why none of it breaks a call site — is `plans/S11-client-handoff.md`.
+the client never calls `/admin/*` or `/auth/password/reset`. The client's copy is pinned at **`eb743d4`**
+(re-vendored 2026-09-30, WL-174) and nothing has changed in `WorkLedger.Contracts` since, so there is
+no drift; `plans/S11-client-handoff.md` is the record of that re-vendor and of why none of it broke a
+call site. Client 0.3.0 (WL-173) then dropped its own account UI: it signs in and opens `portalUrl` for
+everything else.
 
 Server work reads the client repo freely but does not commit to it (`plans/README.md`).
 
