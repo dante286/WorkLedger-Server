@@ -18,8 +18,9 @@ namespace WorkLedger.Server.Auth;
 /// </para>
 /// <para>
 /// <b>Everything that changes a cached fact evicts the key after committing.</b>
-/// <see cref="TokenRevocation"/> caches <c>(UserId, SecurityStamp, IsAdmin, IsDisabled)</c> per device
-/// for <c>Auth:StampCacheSeconds</c>, so suspending, restoring, promoting and demoting all have to drop
+/// <see cref="TokenRevocation"/> caches <c>(UserId, SecurityStamp, IsAdmin, IsDisabled)</c> per device,
+/// and the portal a per-user snapshot of the same facts, for <c>Auth:StampCacheSeconds</c> (one
+/// <see cref="TokenRevocation.EvictUserAsync"/> drops both), so suspending, restoring, promoting and demoting all have to drop
 /// it — <b>including promotion</b>, or a freshly-made admin waits out the TTL before the policy lets
 /// them in. Evicting before the commit would only let a request already in flight re-cache the value
 /// being replaced.
@@ -456,11 +457,19 @@ public sealed class AdminOperations(
     /// log in <c>Program.cs</c> records method, path and status and nothing else precisely so that no
     /// secret or identity lands in it, and admin actions are where that discipline is most tempting to
     /// relax. An id reconciles against a backup; an address puts a person in a log file that holds none.
-    /// Internal so <see cref="InviteService"/>'s admin actions write the same line.
     /// </summary>
     internal static void Audit(ILoggerFactory loggerFactory, int actorUserId, string action, int targetUserId) =>
         loggerFactory.CreateLogger("AdminAction").LogInformation(
             "Admin {ActorUserId} performed {Action} on user {UserId}.", actorUserId, action, targetUserId);
+
+    /// <summary>
+    /// The same line for <see cref="InviteService"/>'s admin actions, whose target is an invite rather
+    /// than a user: its row id, which is what <c>DELETE /admin/invites/{id}</c> names and what the list
+    /// shows. Never the token, and never the bound address.
+    /// </summary>
+    internal static void AuditInvite(ILoggerFactory loggerFactory, int actorUserId, string action, int inviteId) =>
+        loggerFactory.CreateLogger("AdminAction").LogInformation(
+            "Admin {ActorUserId} performed {Action} on invite {InviteId}.", actorUserId, action, inviteId);
 }
 
 /// <summary>What an <see cref="AdminOperations"/> method did, or which rule stopped it.</summary>

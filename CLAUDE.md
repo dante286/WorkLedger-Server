@@ -68,30 +68,38 @@ Three projects (`WorkLedger-Server.slnx`), .NET 10, Minimal APIs, EF Core + Npgs
     account features are portal-only. `/admin/*` is *not* one; it stays the operators' scripting interface.
 - **`tests/WorkLedger.Server.Tests`** — xUnit, `WebApplicationFactory<Program>` + Testcontainers.
 
-`plans/` holds the S0–S11 build plans (all shipped) and is the design record — `plans/README.md`
-explains the cross-repo contract handoff and house style. **`plans/S11-client-handoff.md` is the
-authoritative statement of the current wire contract** (it supersedes S10's, which the client never
-applied); `plans/S9-client-handoff.md` is still the record of what S6–S8 changed.
+`plans/` holds the S0–S12 build plans (S0–S11 shipped; S12, email delivery, is planned and not built)
+and is the design record — `plans/README.md` explains the cross-repo contract handoff and house style.
+**`plans/S11-client-handoff.md` is the authoritative statement of the current wire contract** (it
+supersedes S10's, which the client never applied, and the client applied it at `eb743d4`);
+`plans/S9-client-handoff.md` is still the record of what S6–S8 changed.
 
 ### Deployment (`Dockerfile`, `docker-compose.yml`)
 
 S5. `README.md` is the operator doc — env vars, backups, TLS, troubleshooting — and is the place to
 document deployment behaviour rather than here. Three things that bite when editing these:
 
-- The runtime image is Alpine, so .NET runs **invariant-globalization**. Every culture-sensitive parse is
-  already pinned to `InvariantCulture` (`ReportRange`, `SyncTime`); adding one that isn't would only fail
-  in the container. Alpine also supplies the busybox `wget` that `HEALTHCHECK` uses.
+- The runtime image is Alpine, so .NET runs **invariant-globalization**. Every culture-sensitive parse
+  and date format is already pinned to `InvariantCulture` (`ReportRange`, `SyncTime`, `ReportCsv`,
+  `ReportEndpoints`); adding one that isn't would only misbehave outside the container. Alpine also
+  supplies the busybox `wget` that `HEALTHCHECK` uses.
 - All config resolution for the database goes through `PostgresConnection`, and a **blank** value counts
-  as unset — compose renders an unset optional override as `""`. `Program.cs` resolves `JwtOptions`,
-  `BootstrapOptions` and `PostgresConnection` eagerly right after `Build()` so misconfiguration exits the
-  container naming the key instead of 500ing on a device's first sync.
+  as unset everywhere — compose renders an unset optional override as `""`. `AuthOptions`, `WebOptions`
+  and `Program.cs`'s own `Configured()` (the JWT keys, `Database:MigrateOnStartup`) follow the same rule;
+  a new key read with a bare `configuration[...]`/`GetValue` would not. `Program.cs` resolves
+  `JwtOptions`, `BootstrapOptions`, `PostgresConnection`, `AuthOptions`, `TrustedProxies` and
+  `WebOptions` eagerly right after `Build()` so misconfiguration exits the container naming the key
+  instead of 500ing on a device's first sync.
 - `scripts/smoke-test.ps1` is the only test that exercises the deployment (image, compose wiring,
   migrate-on-boot, a container-minted token, and — when capabilities advertise a `portalUrl` — that the
   image serves portal pages with their CSP and static assets). It writes real rows, deletes the accounts
   it created, and leaves one redeemed `Invites` row per run by design.
 - Every optional key in `docker-compose.yml` is passed through **blank** (`${Key:-}`), so a key missing
   from its `environment:` block is silently ignored under compose however `.env` sets it. Adding a
-  config key means adding it there too (S11 found four S10 keys that had been missed).
+  config key means adding it there too, and to `.env.example` and README's table (S11 found four S10
+  keys that had been missed; the plans audit after it found `Jwt__Issuer`, `Jwt__Audience` and
+  `Database__MigrateOnStartup`, which predated S10). The one key deliberately absent is
+  `Auth:LoginRateLimitWindowSeconds`, a test-only knob.
 
 ### The auth model in one paragraph
 
@@ -186,12 +194,19 @@ they fail if that eviction is dropped. Two behaviours look wrong and are not:
 ### Sync (`src/WorkLedger.Server/Sync/`)
 
 `/sync/push` and `/sync/pull` implement last-write-wins reconciliation. **The merge rules are stated
-once, in full, in the XML doc comment on `SyncService` (rules A–F), and are mirrored by the client and
-by `plans/S3-sync-endpoints.md`. Read that comment before touching merge behaviour, and change all
-three together.** Rules that look like bugs but are not:
+once, in full, in the XML doc comment on `SyncService` (rules A–F, plus the pull cursor), and are
+mirrored by the client and by `plans/S3-sync-endpoints.md`. Read that comment before touching merge
+behaviour, and change all three together.** Rules that look like bugs but are not:
 
-- Deletes are accepted at `>=` (not `>`) and stored at `existing.Version + 1` — forced by client
-  behaviour (WL-93). This is the one deliberate deviation from strict LWW.
+- Deletes are accepted at `>=` (not `>`) and stored at `existing.Version + 1` — forced by client builds
+  before WL-93, which queued a delete at the last update's version. Current clients bump (WL-93 shipped),
+  but reverting to `>` would break every delete from an older build, so it is a release decision. This is
+  the one deliberate deviation from strict LWW.
+- **Push and pull are serialized per user** on a transaction-scoped advisory lock
+  (`SyncService.AdvisoryLockClass`, user id): push exclusive until commit, pull shared, and pull reads
+  `ServerTime` *before* its queries. Without it a pull running during a push's batch hands out a cursor
+  past rows it cannot see yet, and the client — which persists its cursor (WL-92) — never pulls them.
+  Do not move the clock read after the queries "so nothing is missed"; that is the bug.
 - Replays are accepted *no-ops with no EF write at all*. `WorkLedgerDbContext.StampUpdatedAt()` stamps
   `UpdatedAt` on every modified synced row, and `UpdatedAt` is the pull cursor — an incidental write
   re-broadcasts the row to every other device.
@@ -222,13 +237,14 @@ excluded but reported as a `runningEntries` count; length is stored `DurationSec
 `Accept: text/csv`; the query param wins, `*/*` stays JSON) returns RFC 4180; an unrecognized `format`
 is a 400.
 
-## Cross-repo: the client at `E:\GitHub-Repos\WorkLedger-Client`
+## Cross-repo: the client at `../WorkLedger-Client`
 
-The client is a local sibling repo — **read it** when touching anything on the wire. It's an Avalonia
-(.NET 10) offline-first desktop app on SQLite; the pieces that talk to this server are
-`Sync/ApiSyncProvider.cs`, `Services/SyncOrchestrator.cs`, `Services/LocalDbService.cs`, and
-`Models/SyncQueue.cs`. Its own `CLAUDE.md` is **out of date on sync** (it still describes a planned FastAPI
-backend and empty `Sync/` placeholders) — trust the client's code and `Sync/Contracts/README.md` over it.
+The client is a local sibling repo (next to this one, wherever this checkout lives) — **read it** when
+touching anything on the wire. It's an Avalonia (.NET 10) offline-first desktop app on SQLite; the pieces
+that talk to this server are `Sync/ApiSyncProvider.cs`, `Services/SyncOrchestrator.cs`,
+`Services/LocalDbService.cs`, and `Models/SyncQueue.cs`. Its own `CLAUDE.md` describes this server and the
+five endpoints it calls accurately as of its plan 12, and its `Sync/Contracts/README.md` is the record of
+what it vendored and why; where either disagrees with its code, trust the code.
 
 ### The contract is vendored, not packaged
 
@@ -243,48 +259,48 @@ own repo). Consequences:
 - The client's `Tests/WorkLedger.Tests/SyncContractGuardTests.cs` only guards the vendored copy against
   the *client's* own constants and payload shapes. Nothing automatically detects that the copy has fallen
   behind this repo.
-- **Known drift: three trailing, defaulted parameters, and nothing else.** The copy is pinned at server
-  **`3d27c86`** (re-vendored 2026-09-15, WL-133), which closed the S6–S8 drift this paragraph once
-  described. **Do not re-assert that older description**: `RegisterDeviceRequest`/`Response` being
-  deleted and `WhoAmIResponse` being reshaped are on the client already. The client never re-vendored at
-  S10's `1e343c8`, and S11 then moved S10's seven added records (`AdminDtos.cs`, `ResetPasswordRequest`)
-  out of the library. So the whole of what is outstanding is `RegisterUserRequest.InviteToken` (S10) and
-  `AuthCapabilitiesResponse.RegistrationAcceptsInvite` (S10) and `.PortalUrl` (S11). The next pin is
-  **`eb743d4`**, and **`plans/S11-client-handoff.md` is that inventory in full**. It supersedes S10's
-  handoff for the re-vendor; `plans/S9-client-handoff.md` remains the record of the S6–S8 cutover.
-  Re-check with `git log --oneline 3d27c86..HEAD -- src/WorkLedger.Contracts`.
-  - **The re-vendor breaks no client call site.** A scratch copy of the client was built and tested
-    against the new `AuthDtos.cs` (see the handoff), and every new parameter is last and defaulted. That
-    is a constraint S10 and S11 were both built under, not luck. S9's was a genuine cutover; do not
-    assume the next one isn't.
-  - **Records the client stops calling stay vendored.** `RegisterUserRequest`, `ChangePasswordRequest`,
-    `DeviceSummary` and `DeleteAccountRequest` back the JSON compatibility routes, so they stay in the
-    library, and so in the client's copy, until the next deliberately wire-breaking release. That is
-    not drift.
+- **Known drift: none.** The client re-vendored at server **`eb743d4`** on 2026-09-30 (WL-174, the
+  first ticket of client plan 12, WL-173), picking up S10 and S11 in one pass, and shipped it in client
+  0.3.0. The vendored files are byte-identical to `src/WorkLedger.Contracts/` bar each file's provenance
+  header and explicit `using`s. **`plans/S11-client-handoff.md` is the record of that re-vendor**;
+  `plans/S9-client-handoff.md` remains the record of the S6–S8 cutover. Re-check with
+  `git log --oneline eb743d4..HEAD -- src/WorkLedger.Contracts`: anything it prints is new drift, and
+  means a handoff is owed.
+  - **The S10/S11 re-vendor broke no client call site**, as the handoff predicted from a scratch build:
+    every new parameter was last and defaulted. That is a constraint S10 and S11 were both built under,
+    not luck. S9's was a genuine cutover; do not assume the next one isn't.
+  - **Records the client stopped calling stay vendored.** `RegisterUserRequest`, `ChangePasswordRequest`,
+    `DeviceSummary` and `DeleteAccountRequest` back the JSON compatibility routes, which client 0.3.0 no
+    longer calls (they now serve pre-0.3.0 clients and operators' scripts), so they stay in the library,
+    and so in the client's copy, until the next deliberately wire-breaking release. That is not drift.
   - `Reports/ReportDtos.cs` is not drift at all — the client deliberately does not vendor it, because
     it computes its own local reports and never calls `/reports/*`. Nor is
     `SyncItemResult.AuthoritativeOperation` (WL-98), which is on the client and consumed as of WL-101.
   - **Each release re-vendors once, at the end**, deliberately: S6–S8 each changed
     `WorkLedger.Contracts`, and re-taking the copy three times would have handed the client three
     breaking updates instead of one. S9 was that pass for S6–S8, S10E for S10, and S11F (which the
-    client will actually apply, covering S10 as well) for S11.
+    client applied, covering S10 as well) for S11.
   - **The sync wire format is unchanged since before S6.** Audited file-by-file in S9 (WL-126), again in
-    S10 (WL-172) and in S11 (WL-204), where `git diff 3d27c86..HEAD -- src/WorkLedger.Contracts/Sync
+    S10 (WL-172) and in S11 (WL-204), where `git diff 3d27c86 eb743d4 -- src/WorkLedger.Contracts/Sync
     src/WorkLedger.Contracts/Payloads src/WorkLedger.Contracts/Reports` is empty. Not assumed.
 
 ### Server comments that may have gone stale
 
-Several XML docs here describe client gaps and name the ticket that would close them. Some have since
-landed on client `main` — **verify against the client repo before treating them as current, and before
-"fixing" server code that is accommodating them:**
+Several XML docs here once described client gaps and named the ticket that would close them. All of
+the ones below have landed on client `main`, and the server docs were brought up to date by the plans
+audit (2026-10-21) — but the same pattern recurs, so **verify against the client repo before treating
+a "the client doesn't yet…" comment as current, and before "fixing" server code that accommodates it:**
 
-- **WL-91** (parent SyncIds) — the `validate:` messages in `SyncEntityHandler.cs` say the client doesn't
-  carry `ProjectSyncId`/`TaskSyncId`. It now does (`Models/TaskItem.cs`, `Models/TimeEntry.cs`).
-- **WL-93** (delete version bump) — `SyncService` rule D says the `>=` delete accommodation "can be
-  reverted to a plain `>` once WL-93 ships". It has shipped (`LocalDbService.StampForDelete`). Reverting
-  is still a breaking change for any client build older than that, so it's a decision, not a cleanup.
-- **WL-94 / WL-98** — the client half is implemented in `ApiSyncProvider.MapPushResults` (positional
-  zip, `Accepted == false` treated as final, `RequiresFullPull` on a server win).
+- **WL-91** (parent SyncIds) — the client carries `ProjectSyncId`/`TaskSyncId` (`Models/TaskItem.cs`,
+  `Models/TimeEntry.cs`); `SyncEntityHandler`'s `validate:` messages still require them, rightly.
+- **WL-92** (persisted pull cursor) — the client stores the `ServerTime` it is handed
+  (`SyncOrchestrator`), which is why a skipped row is permanent and the per-user sync lock matters.
+- **WL-93** (delete version bump) — shipped (`LocalDbService.StampForDelete`). Rule D's `>=` stays for
+  older builds; reverting it is a decision, not a cleanup.
+- **WL-94 / WL-98 / WL-101** — the client half is implemented in `ApiSyncProvider.MapPushResults`
+  (positional zip, `Accepted == false` treated as final, the winner adopted directly through
+  `AuthoritativeChanges` using `AuthoritativeOperation`, and `RequiresFullPull` only as the fallback when
+  that field is missing).
 
 `ApiSyncProvider`'s header comment lists the server behaviours it depends on — positional results,
 tombstones coming back at a *higher* version, and "accepted" not implying the server wrote anything.

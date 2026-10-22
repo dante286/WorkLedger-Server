@@ -3,7 +3,10 @@ using System.Security.Cryptography;
 namespace WorkLedger.Server.Auth;
 
 /// <summary>
-/// Mints and fingerprints the one-time tokens this API hands out — invites today, password resets next.
+/// Mints and fingerprints the one-time tokens this API hands out — invites and password resets.
+/// Lookup and redemption are not here: each table's service locks its own row <c>FOR UPDATE</c> by this
+/// fingerprint (<see cref="InviteService"/>, <see cref="PasswordResetService"/>), because the lock is
+/// what makes a token single-use and it has to sit inside that caller's transaction.
 /// One implementation, deliberately: two copies of "generate a secret and store a hash of it" is how one
 /// of them ends up with fewer bits or a weaker digest, and nothing would notice.
 /// <para>

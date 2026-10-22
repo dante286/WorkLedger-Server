@@ -295,7 +295,7 @@ public static class AdminEndpoints
         AdminOutcome.LastAdmin => AuthEndpoints.Error(
             StatusCodes.Status409Conflict,
             $"Cannot {verb} the last administrator — this server would be left with none, and " +
-            "POST /admin/bootstrap refuses once any account exists. Promote another user first."),
+            "POST /admin/bootstrap refuses while any active administrator exists. Promote another user first."),
         _ => throw new InvalidOperationException($"Outcome {outcome} is not expected from '{verb}'."),
     };
 }

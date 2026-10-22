@@ -99,6 +99,10 @@ S2 only provisions a single account.
 - Unique `(AccountId, SyncId)` and `(AccountId, DeviceId)` indexes exist and are enforced.
 - Testcontainers-based tests pass locally and in CI.
 
+**As built (audit, 2026-10-21).** The unique `(UserId, DeviceId)` index and the `(UserId, SyncId)` indexes
+on `TaskItems` and `TimeEntries` existed but only the `Projects` one was tested; `WorkLedgerDbContextTests`
+now proves each rejects a duplicate with a unique violation (`23505`), and that the device index is per user.
+
 ## Suggested commit message
 
 ```

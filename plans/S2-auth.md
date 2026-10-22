@@ -75,6 +75,12 @@ that account and stamp/compare origin correctly. Auth is the gate that makes mul
   is absent.
 - Auth tests pass under Testcontainers in CI.
 
+**As built (audit, 2026-10-21).** Scope 5's "authenticated but wrong or missing scoping claims → 403" is a
+**401** in the code: a token lacking `sub`/`user_id` fails authentication in `TokenRevocation` before any
+authorization runs. That is the better answer (the token is not a valid credential at all) and is kept. The
+expired-token and non-JWT 401s and the refuse-to-start-without-a-signing-key criterion were met but untested;
+`AuthEndpointTests` and `StartupConfigurationTests` now cover them (the latter also `Bootstrap:Secret`).
+
 ## Suggested commit message
 
 ```

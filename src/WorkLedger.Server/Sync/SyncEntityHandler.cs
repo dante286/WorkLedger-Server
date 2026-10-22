@@ -189,9 +189,8 @@ internal static class SyncEntityHandlers
                     entity.Version,
                     entity.OriginDeviceId),
                 validate: payload => payload.ProjectSyncId == Guid.Empty
-                    ? "ProjectSyncId is required and must not be Guid.Empty. The client does not yet carry a " +
-                      "parent SyncId on TaskItem (it has only the local int ProjectId) — see WL-91. Storing the " +
-                      "row anyway would make it an orphan that no report can attribute."
+                    ? "ProjectSyncId is required and must not be Guid.Empty (WL-91). Storing the row anyway would " +
+                      "make it an orphan that no report can attribute."
                     : null),
 
             [SyncEntityTypes.TimeEntry] = new SyncEntityHandler<TimeEntry, TimeEntryPayload>(
@@ -223,9 +222,8 @@ internal static class SyncEntityHandlers
                     entity.Version,
                     entity.OriginDeviceId),
                 validate: payload => payload.TaskSyncId == Guid.Empty
-                    ? "TaskSyncId is required and must not be Guid.Empty. The client does not yet carry a parent " +
-                      "SyncId on TimeEntry (it has only the local int TaskItemId) — see WL-91. Storing the row " +
-                      "anyway would make it an orphan that no report can attribute."
+                    ? "TaskSyncId is required and must not be Guid.Empty (WL-91). Storing the row anyway would make " +
+                      "it an orphan that no report can attribute."
                     : null),
         };
 }

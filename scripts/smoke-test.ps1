@@ -42,8 +42,10 @@
     afterwards, and it prints the credentials so you can sign in.
 
     Registration must be open on the target (Auth__RegistrationEnabled / REGISTRATIONS_ALLOWED), and
-    the run spends seven requests against the per-IP credential rate limit
-    (Auth__LoginRateLimitPerMinute, 10 by default), so two runs inside one minute can trip a 429.
+    the run spends POSTs against the per-IP credential rate limit (Auth__LoginRateLimitPerMinute, 10
+    by default): nine when the multi-user leg runs, six when it is skipped, one fewer of each with
+    -KeepAccount. One run fits the default with a request to spare; two inside one minute can trip a
+    429.
     Auth__SignupSecretEnabled may be either way round: the first account registers with the secret if
     that is accepted and otherwise cannot be created at all, which the script says plainly.
 

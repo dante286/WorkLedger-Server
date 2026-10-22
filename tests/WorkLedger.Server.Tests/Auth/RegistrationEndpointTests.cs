@@ -249,6 +249,43 @@ public class RegistrationEndpointTests(UserAccountsFixture fixture) : IAsyncLife
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
+    /// <summary>
+    /// The same for the signup secret (S10): with it switched off the secret no longer registers
+    /// anyone — checked first, so the flag is known to be in effect — but it still claims, because the
+    /// claim is the operator recovering their own data rather than someone new getting an account.
+    /// </summary>
+    [Fact]
+    public async Task Claim_IgnoresTheSignupSecretFlag()
+    {
+        await SeedLegacyTenantAsync();
+        using var host = fixture.CreateHost(("Auth:SignupSecretEnabled", "false"));
+        var client = host.CreateClient();
+
+        var register = await PostAsync(client, "/auth/register", "someone@example.com", GoodPassword, null, fixture.BootstrapSecret);
+        Assert.Equal(HttpStatusCode.Unauthorized, register.StatusCode);
+
+        var response = await PostAsync(client, "/auth/claim", "owner@example.com", GoodPassword, null, fixture.BootstrapSecret);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    /// <summary>
+    /// Ignoring the flag does not mean the claim stops needing the secret: it is the claim's only gate,
+    /// whichever way the flag is set.
+    /// </summary>
+    [Fact]
+    public async Task Claim_WithTheSignupSecretFlagOff_StillRequiresTheSecret()
+    {
+        await SeedLegacyTenantAsync();
+        using var host = fixture.CreateHost(("Auth:SignupSecretEnabled", "false"));
+
+        var response = await PostAsync(host.CreateClient(), "/auth/claim", "owner@example.com", GoodPassword, null, "wrong");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        using var db = fixture.CreateDbContext();
+        Assert.Null((await db.Users.SingleAsync()).PasswordHash);
+    }
+
     [Theory]
     [InlineData("true", true)]
     [InlineData("false", false)]

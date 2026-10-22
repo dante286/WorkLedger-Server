@@ -217,7 +217,7 @@ landed, so no client plan needs revising on their account:
 
 | Asked for | State |
 |---|---|
-| `FailedLoginCount` must reset when the lockout window expires, not only on a successful login ([WL-118](https://mnisan.atlassian.net/browse/WL-118)) | **Done.** Stated in full on `AuthEndpoints`' login doc and covered by tests, which is why `AuthOptions.LockoutMinutes` binds as a fraction — a test has to live through a real window. |
+| `FailedLoginCount` must reset when the lockout window expires, not only on a successful login ([WL-118](https://mnisan.atlassian.net/browse/WL-118)) | **Done.** Stated in full on `AuthEndpoints`' login doc (on `CredentialCheck` since S11) and covered by tests, which is why `AuthOptions.LockoutMinutes` binds as a fraction — a test has to live through a real window. |
 | A `423` must neither increment the counter nor extend `LockoutEndUtc` (WL-118) | **Done.** A `423` writes nothing at all. Together with the reset above, this is what makes it impossible to hold an account locked by hammering it. |
 | Add `MaxFailedLogins` and `LockoutMinutes` to `AuthCapabilitiesResponse` ([WL-147](https://mnisan.atlassian.net/browse/WL-147)) | **Done in S6** — hence six fields. Client plan 09 can warn truthfully before an attempt that would lock the account. |
 

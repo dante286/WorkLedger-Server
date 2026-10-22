@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using WorkLedger.Contracts.Reports;
 
@@ -72,7 +73,7 @@ internal static class ReportCsv
     private static void Row(StringBuilder builder, params object[] fields) =>
         builder.Append(string.Join(',', fields)).Append("\r\n");
 
-    private static string Field(DateOnly date) => date.ToString("yyyy-MM-dd");
+    private static string Field(DateOnly date) => date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 
     /// <summary>
     /// Project and task names are free text a user typed. A name containing a comma, a quote or a

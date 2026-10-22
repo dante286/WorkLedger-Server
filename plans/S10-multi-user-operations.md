@@ -393,6 +393,23 @@ already made once.
   `ReportService` are untouched, and `S10-client-handoff.md` says so on the strength of an audit.
 - Full suite green under Testcontainers, and `scripts/smoke-test.ps1` green against the composed stack.
 
+**As built (audit, 2026-10-21).** Checked against the code after S11:
+
+- **Item 9 is authoritative on self-demotion.** Item 18's "self-demote … through `/admin/*` are `409`" and
+  the prompt's "an admin cannot … demote … themselves" contradict it; the code follows item 9 (an admin may
+  stand down while another admin exists) and `AnAdmin_CanStandDown_OnceSomeoneElseCanAdminister` tests it.
+- **Invite audit lines did not name their target.** `create-invite`/`revoke-invite` logged the actor's id
+  in the target slot; they now log `on invite {id}` (`AdminOperations.AuditInvite`). Admin account deletion
+  logs at Warning rather than item 10's Information, deliberately: it is the one `AccountDeletion` line S8
+  defined, shared by both deletion routes.
+- **`SingleUseToken` is narrower than item 1.** It generates and fingerprints; each table's service does its
+  own `FOR UPDATE` lookup and redemption, because the lock has to sit inside that caller's transaction. Its
+  XML doc now says so.
+- **The login XML doc now says the lockout DoS is only partly closed** (admin unlock and the per-IP limit,
+  not per-source counting), as Out of scope asked.
+- `/auth/claim` with `Auth:SignupSecretEnabled=false` and the startup forwarded-header line were met but
+  only tested indirectly; `RegistrationEndpointTests` and `StartupConfigurationTests` now cover them.
+
 ## Suggested commit message
 
 ```

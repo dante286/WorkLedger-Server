@@ -46,9 +46,12 @@ builder.Services.AddSingleton(sp =>
             "secret of at least 32 bytes — the app refuses to start without it.");
     }
 
-    var issuer = configuration["Jwt:Issuer"] ?? "WorkLedger.Server";
-    var audience = configuration["Jwt:Audience"] ?? "WorkLedger.Client";
-    var expiryDays = configuration.GetValue("Jwt:ExpiryDays", 365);
+    var issuer = Configured(configuration, "Jwt:Issuer") ?? "WorkLedger.Server";
+    var audience = Configured(configuration, "Jwt:Audience") ?? "WorkLedger.Client";
+    var expiryDays = int.TryParse(
+        Configured(configuration, "Jwt:ExpiryDays"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var days)
+        ? days
+        : 365;
     return new JwtOptions(signingKey, issuer, audience, expiryDays);
 });
 
@@ -59,8 +62,8 @@ builder.Services.AddSingleton(sp =>
     if (string.IsNullOrWhiteSpace(secret))
     {
         throw new InvalidOperationException(
-            "Bootstrap:Secret is missing. Set Bootstrap:Secret (or Bootstrap__Secret env var) so device " +
-            "registration can be gated — the app refuses to start without it.");
+            "Bootstrap:Secret is missing. Set Bootstrap:Secret (or Bootstrap__Secret env var) so account " +
+            "registration, claim and admin bootstrap can be gated — the app refuses to start without it.");
     }
 
     return new BootstrapOptions(secret);
@@ -68,8 +71,8 @@ builder.Services.AddSingleton(sp =>
 
 builder.Services.AddSingleton(sp => AuthOptions.Resolve(sp.GetRequiredService<IConfiguration>()));
 builder.Services.AddSingleton<JwtTokenService>();
-// Backs TokenRevocation's per-device (UserId, SecurityStamp) snapshots, which are what keep the
-// revocation check off the database on every authenticated request.
+// Backs TokenRevocation's per-device snapshots and PortalSession's per-user ones, which are what keep
+// the revocation check off the database on every authenticated request.
 builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<PasswordService>();
 builder.Services.AddHttpContextAccessor();
@@ -156,7 +159,7 @@ builder.Services.AddOptions<ForwardedHeadersOptions>()
     });
 
 // Per-IP throttling for the endpoints that take credentials from an anonymous caller. The per-user
-// lockout in /auth/login defends one account; this defends the box against a caller spraying many
+// lockout in CredentialCheck (device and portal sign-in alike) defends one account; this defends the box against a caller spraying many
 // emails, and against registration being used to fill the table.
 //
 // It partitions on Connection.RemoteIpAddress. Behind a reverse proxy that is the proxy for every
@@ -268,7 +271,8 @@ using (var validationScope = app.Services.CreateScope())
 
 // Migrate only. Nothing is seeded: from S6 a fresh database starts with zero users and the first
 // POST /auth/register creates one, so the old Account:Name config read is gone with the seed it fed.
-if (app.Configuration.GetValue("Database:MigrateOnStartup", true))
+if (!bool.TryParse(Configured(app.Configuration, "Database:MigrateOnStartup"), out var migrateOnStartup) ||
+    migrateOnStartup)
 {
     using var scope = app.Services.CreateScope();
     scope.ServiceProvider.GetRequiredService<WorkLedgerDbContext>().Database.Migrate();
@@ -355,5 +359,14 @@ app.Run();
 static bool AcceptsHtml(HttpRequest request) =>
     request.GetTypedHeaders().Accept.Any(accept =>
         accept.MediaType.Equals("text/html", StringComparison.OrdinalIgnoreCase));
+
+// Blank counts as unset, the rule AuthOptions and PostgresConnection follow: docker-compose.yml passes
+// every optional key through as `${Key:-}`, which renders an unset one as "", and that has to mean "use
+// the default" rather than "the empty string" (an empty issuer) or a parse failure.
+static string? Configured(IConfiguration configuration, string key)
+{
+    var value = configuration[key];
+    return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+}
 
 public partial class Program;

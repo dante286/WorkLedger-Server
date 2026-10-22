@@ -53,7 +53,10 @@ namespace WorkLedger.Server.Auth;
 /// Known tradeoff even with all three in place: on a single-user instance, someone who knows the
 /// email can keep the owner locked out <c>Auth:LockoutMinutes</c> at a time by burning the counter
 /// down again. That is accepted for a self-hosted app — the alternative, no lockout at all, is worse
-/// — and rule 3 is what keeps it <i>at a time</i> rather than permanent.
+/// — and rule 3 is what keeps it <i>at a time</i> rather than permanent. S10 only <i>partly</i> closed
+/// it: an admin can now lift a lockout (<see cref="AdminOperations.UnlockAsync"/>) and the per-IP rate
+/// limit slows whoever is burning the counter, but the counter is still per account. Counting failures
+/// per (email, source) is what would remove it, and is a separate change.
 /// </para>
 /// <para>
 /// The lockout and the suspension are both checked <b>before</b> the hash is verified, so a locked or
@@ -114,7 +117,10 @@ public sealed class CredentialCheck(WorkLedgerDbContext db, AuthOptions auth, Pa
                 user.LockoutEndUtc = now + auth.LockoutWindow;
             }
 
-            var justLocked = user.LockoutEndUtc;
+            // Gated on the option rather than read off the row: a window stamped before an operator set
+            // Auth:MaxFailedLogins to 0 is still on the row until it expires, and "0 disables the lockout"
+            // has to hold from the next request, not from whenever that window happens to end.
+            var justLocked = auth.LockoutEnabled ? user.LockoutEndUtc : null;
             user.UpdatedAt = now;
             await db.SaveChangesAsync(cancellationToken);
 

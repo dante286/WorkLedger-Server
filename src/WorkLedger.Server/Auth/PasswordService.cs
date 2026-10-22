@@ -35,7 +35,7 @@ public sealed class PasswordService
     /// <summary>
     /// Verifies <paramref name="password"/> against a stored hash. <c>RehashNeeded</c> means the hash is
     /// valid but was produced by an older format and should be replaced on the next successful login —
-    /// S7 acts on it; S6 has no login to act on it in.
+    /// <c>CredentialCheck</c> acts on it, rehashing on the way through.
     /// <para>
     /// A stored value that is not a hash at all — a hand-edited row, a column restored from somewhere it
     /// should not have been — makes the underlying hasher throw while decoding the base64. That is

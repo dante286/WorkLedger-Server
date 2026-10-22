@@ -18,8 +18,8 @@ namespace WorkLedger.Server.Auth;
 /// query covers three separate revocations, and S8 gave each of them an endpoint:
 /// <b>account deleted</b> (<c>DELETE /auth/account</c>), <b>device removed</b>
 /// (<c>DELETE /auth/devices/{deviceId}</c>), and <b>stamp bumped</b> (<c>POST /auth/password</c> and
-/// <c>POST /auth/logout-all</c>). S10 added a fourth to the same query: <b>account disabled</b>
-/// (<c>POST /admin/users/{id}/disable</c>).
+/// <c>POST /auth/logout-all</c>, and from S10 redeeming a password reset). S10 added a fourth to the same
+/// query: <b>account disabled</b> (<c>POST /admin/users/{id}/disable</c>).
 /// </para>
 /// <para>
 /// <b>S10 also made this the source of truth for who is an admin.</b> The same row the revocation
@@ -227,7 +227,7 @@ internal static class TokenRevocation
     }
 
     /// <summary>
-    /// One projection of <c>(UserId, SecurityStamp)</c> per device row, cached for
+    /// One projection of <c>(UserId, SecurityStamp, IsAdmin, IsDisabled)</c> per device row, cached for
     /// <c>Auth:StampCacheSeconds</c>. A <b>miss is cached too</b>: a revoked device's token would
     /// otherwise re-query on every request it keeps making, and a negative entry cannot shadow a real
     /// device because Postgres identity ids are never reused.

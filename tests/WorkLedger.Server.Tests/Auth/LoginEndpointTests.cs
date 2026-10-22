@@ -477,6 +477,28 @@ public class LoginEndpointTests(UserAccountsFixture fixture) : IAsyncLifetime
     }
 
     /// <summary>
+    /// <c>Auth:MaxFailedLogins=0</c> disables the lockout from the next request, including for an
+    /// account still inside a window stamped while it was armed: neither password may answer 423.
+    /// </summary>
+    [Fact]
+    public async Task Lockout_Disabled_IgnoresAWindowStampedWhileItWasArmed()
+    {
+        await SeedUserAsync();
+        using (var armed = LockoutHost())
+        {
+            await LockAsync(armed.CreateClient());
+        }
+
+        Assert.NotNull((await ReloadUserAsync()).LockoutEndUtc);
+
+        using var host = fixture.CreateHost(("Auth:MaxFailedLogins", "0"));
+        var client = host.CreateClient();
+
+        Assert.Equal(HttpStatusCode.Unauthorized, (await LoginAsync(client, Email, WrongPassword, "device-a", null)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await LoginAsync(client, Email, Password, "device-a", null)).StatusCode);
+    }
+
+    /// <summary>
     /// Per-IP throttling, which is the defense the per-user lockout cannot provide: a caller spraying one
     /// password across many email addresses never trips any single account's counter.
     /// <para>

@@ -179,6 +179,11 @@ short expiry, and it is what makes S8's account deletion and device revocation a
   caller.
 - Full suite green under Testcontainers.
 
+**As built (audit, 2026-10-21).** `Auth:MaxFailedLogins=0` did not quite disable the lockout: an account
+still inside a window stamped while it was armed answered a wrong password with `423`, because the failure
+path read the stale `LockoutEndUtc` off the row. `CredentialCheck` now gates that on the option, and
+`Lockout_Disabled_IgnoresAWindowStampedWhileItWasArmed` covers it.
+
 ## Suggested commit message
 
 ```
