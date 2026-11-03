@@ -21,6 +21,13 @@
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
   </ItemGroup>
 
+  <!-- S12's SMTP transport. MailKit rather than System.Net.Mail.SmtpClient, which Microsoft marks "not
+       recommended for new development"; managed code with no native dependency, so the Alpine image
+       needs nothing extra. Checked with the NuGet vulnerability audit (dotnet list package with vulnerable and include-transitive). -->
+  <ItemGroup>
+    <PackageReference Include="MailKit" Version="4.18.2" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>

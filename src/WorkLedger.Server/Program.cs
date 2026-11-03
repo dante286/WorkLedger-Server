@@ -11,6 +11,7 @@ using Microsoft.IdentityModel.Tokens;
 using WorkLedger.Server;
 using WorkLedger.Server.Auth;
 using WorkLedger.Server.Data;
+using WorkLedger.Server.Email;
 using WorkLedger.Server.Reports;
 using WorkLedger.Server.Sync;
 using WorkLedger.Server.Web;
@@ -93,6 +94,11 @@ builder.Services.AddScoped<RegistrationService>();
 // The web portal (S11): Razor Pages under /portal behind Web:Enabled, default off. Registered either way
 // and inert until mapped below — see PortalSetup for why the gate is on the pipeline, not here.
 builder.Services.AddPortal();
+
+// Outbound mail (S12) behind Email:Enabled, default off, and only alongside the portal its links point
+// at. Registered either way and inert while off — see EmailSetup, and EmailOutbox for why mail waits in
+// memory rather than in a table.
+builder.Services.AddEmail();
 
 // JwtBearer stays the DEFAULT scheme, so the fallback and admin policies — and with them every JSON
 // route — authenticate by bearer token only. The portal's cookie scheme sits beside it and is consulted
@@ -267,6 +273,7 @@ using (var validationScope = app.Services.CreateScope())
     validationScope.ServiceProvider.GetRequiredService<AuthOptions>();
     validationScope.ServiceProvider.GetRequiredService<TrustedProxies>();
     validationScope.ServiceProvider.GetRequiredService<WebOptions>();
+    validationScope.ServiceProvider.GetRequiredService<EmailOptions>();
 }
 
 // Migrate only. Nothing is seeded: from S6 a fresh database starts with zero users and the first
@@ -295,6 +302,11 @@ app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup").LogInf
         ? "Trusting X-Forwarded-For from {TrustedProxies}; rate limits partition on the forwarded client address."
         : "Not trusting X-Forwarded-For (Network:TrustedProxies is unset); rate limits partition on the socket address, which behind a reverse proxy is one bucket for the whole deployment.",
     trustedProxies.Describe());
+
+// The mail mode, both ways, for the same reason. Its own category rather than "Startup", so the line
+// above stays the only one there.
+app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Email").LogInformation(
+    "{EmailMode}", app.Services.GetRequiredService<EmailOptions>().Describe());
 
 // Method, path and status only. Request.Path excludes the query string and no header is logged, which
 // is what keeps bearer tokens and the X-Bootstrap-Secret out of the log — every secret the JSON API
