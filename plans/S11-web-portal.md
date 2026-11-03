@@ -415,7 +415,8 @@ POST. All three are rate-limited under `AuthEndpoints.RateLimitPolicy` and carry
 - **Time entry in the browser.** The portal manages accounts, not ledgers. Entering or editing time on the web
   would make the server a second client of its own data model, with its own merge story. Revisit only if it is
   wanted, and then as its own plan.
-- **Self-service "forgot password", and email of any kind.** Still needs SMTP (S10 item 13).
+- **Self-service "forgot password", and email of any kind.** Still needs SMTP (S10 item 13). *(Built in
+  S12: [S12-email-delivery.md](S12-email-delivery.md).)*
 - **Removing the compatibility routes, `/auth/claim` or the records they use.** Next wire-breaking release.
 - **A separate portal origin or process.** Item 7 explains why one process. A split would need a distributed
   cache for revocation and is not worth it for a self-hosted box.

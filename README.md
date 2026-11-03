@@ -149,6 +149,108 @@ upgrade does not sign anyone out. They sit unencrypted in that table, which is a
 same reason the table is where it is: anyone who can read it can already read every user row. Your
 dumps carry them.
 
+### Email
+
+The server can send email through **your mail provider's SMTP relay**. With it on:
+
+- an administrator can **email an invite or a password reset** from the portal (or `/admin/*` with
+  `sendEmail`). The link is still shown once on the page, so a slow or spam-filtered message never leaves
+  you without it;
+- a user who has forgotten their password can **recover it themselves** from **Forgot your password?** on
+  the sign-in page (`/portal/forgot`), with no administrator involved;
+- every password change sends the account a **"Your WorkLedger password was changed"** notice, with no
+  link in it, so a takeover doesn't go unnoticed.
+
+It is **off by default, and off means absent**: no other `Email__*` key is read, no mail worker runs, and
+every page behaves as it does without it. It needs [the portal](#the-web-portal) on, because every link in
+a message goes to a portal page built from `Web__PublicBaseUrl`.
+
+```dotenv
+# .env -- any SMTP relay; see the Resend example below for a complete one
+Email__Enabled=true
+Email__SmtpHost=smtp.example.com          # your provider's relay
+Email__SmtpUsername=apikey                # if it authenticates by user and password
+Email__SmtpPassword=...                   # a secret; never logged or shown
+Email__FromAddress=no-reply@ledger.example.com
+```
+
+**Relay through your provider; don't send straight to recipients.** Mail sent directly to other people's
+mail servers from a VPS lands in spam. SPF, DKIM and DMARC are your provider's job, set up for your sending
+domain, and this server does none of it. Any SMTP relay works the same way through the same keys: Resend,
+Postmark, SES, Mailgun, Google Workspace or your own Postfix.
+
+**Port 587 with `StartTls` is the default, and it is a requirement rather than a preference.** A relay that
+doesn't offer STARTTLS fails delivery instead of receiving reset links in plaintext, because anyone in
+between could strip the offer. `SslOnConnect` is TLS from the first byte (usually port 465). `None` exists
+only for a relay on the same host or compose network, and is refused together with a username. There is no
+way to turn certificate validation off; for a relay with a private CA, mount the CA into the container's
+trust store (`/etc/ssl/certs`).
+
+**Check it from the portal, not the logs.** Starting the server never contacts the relay (one that is down
+for maintenance must not stop sync). **Administration → Email** shows the settings it resolved, never the
+password, and **Send a test message to me** goes straight to the relay and shows its answer: "Delivered to
+the relay", or the SMTP status and the relay's own words. That reply text appears only there, to the admin
+who sent it; the log records the message kind, the user id and the status code, never an address.
+
+**What is sent, and when:**
+
+| Message | Sent when | Link? |
+|---|---|---|
+| Invite | An admin ticks **Email this invite** (which binds the invite to that address) | Yes, plus the bare code |
+| Password reset | An admin clicks **Issue reset and email it** | Yes, plus the bare code; `Auth__PasswordResetExpiryHours` |
+| Password reset | A user asks at **Forgot your password?** | Yes, plus the bare code; `Auth__SelfServiceResetExpiryMinutes` |
+| Password changed | Any password change or reset redemption, from the portal or the JSON API | **No** link and no code |
+| Test message | An admin sends one from **Administration → Email** | No |
+
+Every link carries its token after the `#`, and only a form post spends it, so mail scanners that open
+links before the recipient does burn nothing. Each message also carries the code on its own line, with the
+page to paste it into, for gateways that rewrite links.
+
+**Nothing waiting to be sent survives a restart, by design.** Mail waits in a bounded queue in memory
+(`Email__QueueCapacity`) and a background worker sends it, retrying a busy or unreachable relay a few
+times and giving up on a refusal. There is no outbox table, because it would store live links in the
+database, which today holds only fingerprints of them. Everything here can be sent again. When the queue
+is full, the invite and reset pages say so and show the link anyway.
+
+#### Worked example: Resend
+
+This deployment relays through [Resend](https://resend.com) over SMTP, sending as a **dedicated
+subdomain**, `ledger.zanarkand.net`, rather than the apex. The apex already publishes a hard-fail SPF record
+for Exchange Online, and a second SPF record there would break its live mail. Resend's records sit on child
+labels of the subdomain, so they collide with nothing.
+
+1. In Resend, add `ledger.zanarkand.net` as a domain. Add the records it shows to Route 53 (take the exact
+   values from the dashboard), and wait for it to show as verified:
+
+   ```
+   MX   send.ledger.zanarkand.net              10 feedback-smtp.us-east-1.amazonses.com
+   TXT  send.ledger.zanarkand.net              "v=spf1 include:amazonses.com ~all"
+   TXT  resend._domainkey.ledger.zanarkand.net p=<key from the Resend dashboard>
+   ```
+
+2. Create an API key with **sending access only, restricted to `ledger.zanarkand.net`**, kept separate from
+   any other app's key so either can be revoked alone. A leaked key can then only send as that domain.
+3. Put it in `.env` and `docker compose up -d`:
+
+   ```dotenv
+   Email__Enabled=true
+   Email__SmtpHost=smtp.resend.com
+   Email__SmtpPort=587
+   Email__SmtpSecurity=StartTls
+   Email__SmtpUsername=resend                     # literally the word "resend"
+   Email__SmtpPassword=re_your_sending_only_key
+   Email__FromAddress=no-reply@ledger.zanarkand.net
+   ```
+
+4. Send yourself a test message from **Administration → Email**. **The from address must be on the verified
+   domain**; Resend refuses any other, and startup can't check this because only Resend knows which domains
+   are verified. The test page shows Resend's reply, which names the problem.
+
+**Replacing a revoked key:** Resend answers a revoked or deleted key with a 5xx, which isn't retried, so
+every message fails with one log line each until you put the new key in `.env`, run `docker compose up -d`,
+and check it with the test page. The free tier is shared with any other app on the same Resend account; see
+[Resend's pricing](https://resend.com/pricing) for the current limits rather than numbers copied here.
+
 ### First run
 
 **With the portal on**, open the server in a browser and go to **`/portal/setup`**. On an empty
@@ -240,12 +342,14 @@ admins: open `/portal/setup`, which in that state offers **sign in and promote y
 a second time to grant yourself somebody else's server.
 
 **Onboard people with invite links, not the signup secret.** In the portal, **Administration →
-Invites → Create invite link**. Optionally bind it to one address, shorten or lengthen its life
-(`Auth__InviteExpiryDays` by default), and leave yourself a note. The page shows a link —
-`https://ledger.example.com/portal/register#invite=…` — **once**: the server keeps only a SHA-256 of
-the token, so it is never recoverable afterwards. Send it however you talk to them. It opens a sign-up
-form with the invite already filled in; they choose their own password, land signed in to the portal,
-and are shown the server address to paste into the desktop app.
+Invites → Create invite link**. With [email](#email) on, enter their address and tick **Email this
+invite**: the server sends it, and binds the invite to that address so a forwarded copy is useless to
+anyone else. Either way you can shorten or lengthen its life (`Auth__InviteExpiryDays` by default) and
+leave yourself a note, and the page shows the link — `https://ledger.example.com/portal/register#invite=…`
+— **once**: the server keeps only a SHA-256 of the token, so it is never recoverable afterwards. Without
+email, or if the message is slow, send that link however you talk to them. It opens a sign-up form with
+the invite already filled in; they choose their own password, land signed in to the portal, and are shown
+the server address to paste into the desktop app.
 
 - **Opening the link spends nothing.** Chat and mail apps fetch links to build previews; only submitting
   the form redeems the invite, and it works once. A sign-up that fails — the address is already taken,
@@ -282,14 +386,18 @@ rules are worth knowing before you need them:
   cookie. A demotion, a suspension or a deletion takes effect on that person's very next request — in
   the portal and on every desktop install — not when some credential eventually expires.
 
-**A forgotten password** is an admin action rather than a `psql` session. **Users → Password reset
-link** shows a single-use link, `…/portal/reset#token=…`, once, with its expiry
-(`Auth__PasswordResetExpiryHours`). Hand it over; they choose the new password on that page and you
-never see it. Every one of their devices is signed out and signs in again, a lockout is cleared, and
-the page does *not* sign them in — the link proves they hold the link; the next sign-in proves the
-password. It dies on first use, and issuing a second one kills the first. An unknown, expired or
-already-spent link all get the same message. **No email is sent** by any of this: the server has no
-mail, so passing links on is yours to do, and there is still no self-service "forgot my password".
+**A forgotten password** needs nobody at all once [email](#email) is on: **Forgot your password?** on
+the sign-in page emails them a link that lasts `Auth__SelfServiceResetExpiryMinutes` (60 by default).
+The page answers the same way whatever address is typed, so it can't be used to find out who has an
+account; a suspended account gets nothing, and asking again within `Email__ResetCooldownMinutes` sends
+nothing more. Without email — or for someone who can't get it — it is an admin action rather than a
+`psql` session: **Users → Password reset link** shows a single-use link, `…/portal/reset#token=…`, once,
+with its expiry (`Auth__PasswordResetExpiryHours`), and **Issue reset and email it** sends it as well.
+Either way they choose the new password on that page and you never see it. Every one of their devices is
+signed out and signs in again, a lockout is cleared, they get a "password changed" notice if email is on,
+and the page does *not* sign them in — the link proves they hold the link; the next sign-in proves the
+password. A reset dies on first use, and issuing another, by anyone, kills the outstanding one. An
+unknown, expired or already-spent link all get the same message.
 
 Everyone, administrator or not, manages their own account in the portal too: the devices signed in to
 it (removing one signs that install out and deletes none of its data), their password, signing out
@@ -442,15 +550,25 @@ it empty both mean the default below. (`POSTGRES_DB`/`POSTGRES_USER`, `API_PORT`
 | `Auth__SignupSecretEnabled` | `true` | Whether `X-Bootstrap-Secret` still satisfies `POST /auth/register`. Set `false` and an **invite** becomes the only way to create an account — which is the point of invites, not an extra. Defaults on so an upgrade changes nothing. `/auth/claim` and `POST /admin/bootstrap` are unaffected. Reported by `/auth/capabilities`. `SIGNUP_SECRET_ENABLED` is the flat alias; the `Auth__` key wins if both are set. |
 | `Auth__InviteExpiryDays` | `14` | How long an invite lasts when the issuing admin does not choose. `expiresInDays` on the request overrides it per invite. **There is no value meaning "never"** — an invite that cannot expire is a standing credential, which is the thing invites exist to stop being. |
 | `Auth__PasswordResetExpiryHours` | `24` | How long an admin-issued reset token lasts. Hours where an invite gets days, and on purpose: an invite is arranged in advance, a reset is handed over during a conversation happening now. |
+| `Auth__SelfServiceResetExpiryMinutes` | `60` | How long a reset the user asked for at `/portal/forgot` lasts. Minutes, where an admin-issued one gets hours: the person who asked is the person who clicks. Only used with [email](#email) on. |
 | `Auth__MinPasswordLength` | `12` | Shortest password `/auth/register`, `/auth/claim`, `/auth/password` and `/auth/password/reset` accept. Reported by `/auth/capabilities`. |
 | `Auth__MaxFailedLogins` | `5` | Consecutive failed sign-ins before an account locks. `0` disables the lockout — it does not mean "lock on the first failure" — and does so from the next request, even for an account inside a window stamped while it was armed. |
 | `Auth__LockoutMinutes` | `15` | How long that lockout lasts. The failure counter resets once the window expires, so an account cannot end up locked permanently. |
-| `Auth__LoginRateLimitPerMinute` | `10` | Per-IP limit on `/auth/register`, `/auth/claim`, `/auth/login` and `/auth/password/reset`, and on the portal's credential forms — sign-in, setup, register, reset, password change and account deletion — which share the same bucket (a `GET` that only renders a form spends nothing); over it is `429` with `Retry-After`. `0` disables it. Which address it partitions on depends on `Network__TrustedProxies` below. |
+| `Auth__LoginRateLimitPerMinute` | `10` | Per-IP limit on `/auth/register`, `/auth/claim`, `/auth/login` and `/auth/password/reset`, and on the portal's credential forms — sign-in, setup, register, reset, forgot-password, password change and account deletion — which share the same bucket (a `GET` that only renders a form spends nothing); over it is `429` with `Retry-After`. `0` disables it. Which address it partitions on depends on `Network__TrustedProxies` below. |
 | `Network__TrustedProxies` | *(unset)* | Comma-separated IP addresses and CIDR blocks of the reverse proxies whose `X-Forwarded-For` this deployment believes. **Unset means no forwarded-header processing at all** — the middleware is not even registered — so the rate limiter partitions on the socket address, as it always has. Set it and each caller behind the proxy gets their own bucket. A malformed entry fails startup naming the value; see [Putting it behind TLS](#putting-it-behind-tls). |
 | `Auth__StampCacheSeconds` | `30` | How long a token's revocation check is cached. **This is the revocation lag**, and only for revocations that happen elsewhere: the endpoints that revoke evict the entry themselves, so the common case is immediate. `0` checks the database on every authenticated request. |
 | `Web__Enabled` | `false` | Serve [the web portal](#the-web-portal) under `/portal`. Off means absent: no page, cookie or route, and every existing request behaves as before. |
 | `Web__PublicBaseUrl` | *(unset)* | **Required when `Web__Enabled=true`** — startup fails naming the key without it. The absolute `https://` address browsers reach this server at (only `localhost` may be `http://`), no path, query or fragment. The only source of invite links, reset links and `portalUrl`; never the request's `Host`. |
 | `Web__SessionHours` | `8` | A portal session's sliding lifetime. There is no "remember me". |
+| `Email__Enabled` | `false` | Turn on [email](#email). **Needs the portal on**; with it off, none of the `Email__*` keys below is read. |
+| `Email__SmtpHost` | *(unset)* | **Required when `Email__Enabled=true`.** Your provider's SMTP relay. Startup never contacts it. |
+| `Email__SmtpPort` | `587` | |
+| `Email__SmtpSecurity` | `StartTls` | `StartTls` (**required**, never opportunistic), `SslOnConnect` (usually port 465), or `None` (a relay on the same host or compose network only; refused with a username). Anything else fails startup. |
+| `Email__SmtpUsername` / `Email__SmtpPassword` | *(unset)* | Optional, for relays that authenticate by user rather than IP. The password is a **secret**, required once a username is set, and never logged or shown. |
+| `Email__FromAddress` | *(unset)* | **Required when `Email__Enabled=true`.** An address on a domain the relay may send for. |
+| `Email__FromName` | `WorkLedger` | |
+| `Email__QueueCapacity` | `100` | Messages that can wait in memory for the relay. When it's full, the operator pages say so and still show the link. |
+| `Email__ResetCooldownMinutes` | `5` | After a self-service reset is sent, further `/portal/forgot` requests for that user send nothing for this long. `0` turns it off. |
 | `Database__MigrateOnStartup` | `true` | Set `false` to apply migrations as a separate step instead (see [Schema changes](#schema-changes)). |
 | `API_PORT` / `API_BIND` | `8080` / `0.0.0.0` | Host side of the published port. `API_BIND=127.0.0.1` when a reverse proxy is the only thing that should reach it. |
 | `WORKLEDGER_VERSION` | `latest` | Image tag to run. It is also the version a local `docker compose up --build` stamps into `GET /`, which reads `0.0.0-dev` when it is unset. |
@@ -638,16 +756,17 @@ Two details worth knowing:
 
 ### Recovering a lost password
 
-**Try an administrator first.** The portal's **Users → Password reset link** (or
+**With [email](#email) on, try Forgot your password? first.** It works for any account with a
+password that isn't suspended, administrators included, and needs nobody else.
+
+**Then an administrator.** The portal's **Users → Password reset link** (or
 `POST /admin/users/{id}/password-reset`) issues a single-use link you hand over, and covers every case except the one where nobody can administer the server — see
 [Running this for more than one person](#running-this-for-more-than-one-person). What follows is the
-fallback for when that is not available: no admin exists, or the only one is the account that is locked
-out.
+fallback for when neither is available: email is off or unreachable, and no admin exists or the only one
+is the account that is locked out.
 
-There is still no *self-service* reset, because the server sends no mail and so has no reset link to
-send (see [Security posture](#security-posture-and-deferred-hardening)). What there is instead is the
-database, which you own. Both recoveries below are `psql` against the volume, and both assume you can
-reach it:
+That fallback is the database, which you own. Both recoveries below are `psql` against the volume, and
+both assume you can reach it:
 
 ```bash
 docker compose exec -it postgres psql -U workledger -d workledger
@@ -796,7 +915,18 @@ pwsh ./scripts/smoke-test.ps1              # against a stack that is already up
 pwsh ./scripts/smoke-test.ps1 -Up          # docker compose up --build first
 pwsh ./scripts/smoke-test.ps1 -KeepAccount # leave the throwaway account behind to poke at
 pwsh ./scripts/smoke-test.ps1 -BaseUrl https://workledger.example.com -BootstrapSecret <secret>
+pwsh ./scripts/smoke-test.ps1 -Up -WithMailpit -Down   # also check email inside the image
 ```
+
+**`-WithMailpit` checks email where only the image can.** It layers `docker-compose.mailpit.yml` on,
+which adds a [Mailpit](https://mailpit.axllent.org) catch-all relay and turns email on against it, then
+checks the image carries a CA bundle (STARTTLS to a public relay needs one), emails a reset through
+`/admin/*` and reads it back from Mailpit, and does the same for an account on a **non-ASCII domain**. That
+last one matters because the image runs invariant globalization and MimeKit encodes such a domain with
+`IdnMapping`: the step passes if the message arrives, or if the worker drops it with its log line, and
+fails only on a `500`. As of S12 it arrives, as `xn--bcher-kva.invalid`. It needs to administer the target,
+like the multi-user leg. Mailpit's API is read at `localhost:18025` (`MAILPIT_PORT`), or wherever
+`-MailpitUrl` says.
 
 It reads `API_PORT` and `Bootstrap__Secret` from `.env` when not given, asserts every step, and exits
 non-zero on the first failure. This is not a substitute for `dotnet test` — the merge rules, the
@@ -825,11 +955,11 @@ before pointing it at a deployment you care about:
   account. Against a deployment with signup closed it stops at that step and says so.
 - It spends POSTs on the per-IP credential rate limit (`Auth__LoginRateLimitPerMinute`, 10 by
   default): nine on a fresh volume, where the multi-user leg runs, and six where it is skipped — one
-  fewer of each with `-KeepAccount`. One run fits the default with a request to spare; two inside the
-  same minute can trip a `429`.
-- **One row is left in `Invites` per run**, and that is the feature rather than a leak: both user
-  references are `ON DELETE SET NULL` so the invite outlives the accounts, and a redeemed invite
-  cannot be revoked. Each run leaves one redeemed row with two null user ids.
+  fewer of each with `-KeepAccount`, and one more with `-WithMailpit`. One run fits the default
+  (exactly, with `-WithMailpit`); two inside the same minute can trip a `429`.
+- **One row is left in `Invites` per run** (two with `-WithMailpit`), and that is the feature rather than
+  a leak: both user references are `ON DELETE SET NULL` so the invite outlives the accounts, and a
+  redeemed invite cannot be revoked. Each run leaves redeemed rows with null user ids.
 - If the leg ran, the throwaway account was **promoted to admin** along the way — and then deleted, so
   the deployment ends with exactly the administrators it started with, which for a fresh volume is
   none.
@@ -842,8 +972,8 @@ look around; that account and its rows then stay until you delete them or drop t
 
 - **Nothing is anonymous** except `/`, `/health`, the five endpoints a caller with no token needs
   (`/auth/capabilities`, `/auth/register`, `/auth/claim`, `/auth/login`, `/auth/password/reset`), and,
-  with the portal on, its sign-in, setup, register and reset pages, a few informational pages and its
-  static assets — enforced by an authorization fallback policy rather than per-endpoint attributes, so
+  with the portal on, its sign-in, setup, register and reset pages (and, with email on, forgot-password),
+  a few informational pages and its static assets — enforced by an authorization fallback policy rather than per-endpoint attributes, so
   a new endpoint cannot be left open by omission.
 - **A browser never holds a device token, and the two credentials never cross.** The portal's session
   is a user-level cookie — `__Host-` prefixed, `HttpOnly`, `Secure`, `SameSite=Lax`, sliding over
@@ -854,7 +984,7 @@ look around; that account and its rows then stay until you delete them or drop t
 - **Portal responses are hardened, and only portal responses.** A `Content-Security-Policy` with no
   `unsafe-inline` (the pages use no inline script or style), `Referrer-Policy: no-referrer`,
   `X-Content-Type-Options: nosniff` and `Cache-Control: no-store`. The portal's credential forms —
-  sign-in, setup, register, reset, password change and account deletion — share the per-IP credential
+  sign-in, setup, register, reset, forgot-password, password change and account deletion — share the per-IP credential
   rate limit with `/auth/login`, and a portal sign-in spends the same per-account lockout budget as a
   device's.
 - **Links are never built from `Host`.** Invite and reset links come from `Web__PublicBaseUrl` alone,
@@ -910,19 +1040,34 @@ look around; that account and its rows then stay until you delete them or drop t
 - The container runs as a non-root user (`app`, uid 1654) and Postgres publishes no host port.
 - Secrets are never logged: the request log is method, path and status only — no query string, no
   headers and no body. Every secret the JSON API accepts arrives in a header or a body, and every one
-  the portal accepts arrives in a form body, so none is ever in a path.
+  the portal accepts arrives in a form body, so none is ever in a path. Portal form fields are bound
+  properties rather than handler arguments, so they stay out of the log even at `Trace`.
+- **Email (when on) changes none of that.** Mail waits in memory, never in the database, so the database
+  still holds no usable token. Delivery log lines carry the message kind, the user id and the SMTP
+  status — never an address and never the relay's reply text, which routinely quotes the recipient.
+  STARTTLS is required, not opportunistic, and certificate validation cannot be turned off.
+  **Forgot your password?** answers identically for every address and does its lookup off the request
+  path, so neither its wording nor its timing reveals who has an account; a per-user cooldown stops it
+  being used to flood an inbox or keep cancelling someone's reset link. Every password change, through
+  the portal or the JSON API, sends a notice with no link in it.
 
 ### What it deliberately does not do
 
-- **No email verification.** An email address is an identifier here, not a verified one; the server
-  sends no mail and never contacts the address. Anyone holding the signup secret, or an invite not
-  bound to an address, can register any address they like.
-- **No self-service password reset.** There is an *admin-issued* one — the portal's reset link, or `POST
-  /admin/users/{id}/password-reset` — which you hand over out of band, but no
-  `forgot my password` a user can drive alone, because that needs mail the server cannot send. A
-  deployment with no administrator left at all falls back to the database; see
+- **No email verification.** An email address is an identifier here, not a verified one; even with
+  email on, the server never checks that an address belongs to whoever registered it. Anyone holding
+  the signup secret, or an invite not bound to an address, can register any address they like — and
+  **with email on, the real owner of that address can then take the account over** with
+  **Forgot your password?**. That harms nobody (whoever registered it had given the address away), but
+  it is why `Auth__SignupSecretEnabled=false` and address-bound invites are the way to onboard.
+- **No self-service recovery without email.** **Forgot your password?** exists only while email is on.
+  Otherwise there is the *admin-issued* reset — the portal's reset link, or `POST
+  /admin/users/{id}/password-reset` — which you hand over out of band, and a deployment with no
+  administrator left at all falls back to the database; see
   [Recovering a lost password](#recovering-a-lost-password). Keep the signing key and a recent dump
   somewhere you can reach.
+- **No outbox.** Mail waiting at shutdown is lost rather than persisted, because a persisted message
+  holds a live link. Everything the server sends can be sent again. There is also no bounce handling or
+  delivery tracking: "delivered" means the relay accepted it.
 - **No quotas, and no visibility into anyone's data.** An admin can list users and act on the
   *accounts* — unlock, suspend, promote, reset, delete — and that is the whole surface. There is no
   role that can read another user's projects, tasks, entries or reports, and none that can cap what
@@ -940,9 +1085,9 @@ look around; that account and its rows then stay until you delete them or drop t
 - **No IP-accurate rate limiting until you configure it.** Behind a proxy the limiter shares one
   bucket across the deployment unless `Network__TrustedProxies` names the hop — opt-in, because
   guessing would be the worse bug. See [Putting it behind TLS](#putting-it-behind-tls).
-- **The lockout's residual denial of service is only half closed.** An admin can unlock an account, so
-  a locked-out user asks someone rather than waiting on an operator with `psql`. But anyone who knows
-  an address can still lock it again: the failure counter keys on the account alone, not on
+- **The lockout's residual denial of service is only half closed.** An admin can unlock an account, and
+  with email on the owner can recover alone (a redeemed reset clears the lockout), so a locked-out user
+  needn't wait on an operator with `psql`. But anyone who knows an address can still lock it again: the failure counter keys on the account alone, not on
   `(account, source address)`. Closing it properly needs a failure table and an eviction policy, and
   is deliberately not in this release.
 - **Account deletion is immediate and irreversible.** `DELETE /auth/account` removes the time entries,
@@ -950,7 +1095,9 @@ look around; that account and its rows then stay until you delete them or drop t
   and no undo, and the only export is `/reports/*?format=csv`, which covers recorded time rather than
   the raw rows — take one before deleting, and keep your dumps.
 - **No audit table.** What there is lives in the log and one table. Each admin write logs one
-  `AdminAction` line naming the actor, the action and the target user or invite id; account deletion
+  `AdminAction` line naming the actor, the action and the target user or invite id (including
+  `email-invite`, `email-password-reset` and `send-test-email`), a self-service reset logs an
+  `AccountAction` line with the user id; account deletion
   writes a single warning line carrying the user id and the per-table counts — never an email, for
   the same reason the request log records no headers. The `Invites` table keeps who issued and who
   redeemed each invite, by id, until that account is deleted. The log lines last only as long as you

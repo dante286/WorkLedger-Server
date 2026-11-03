@@ -356,7 +356,8 @@ already made once.
   still burn it down again. The real fix is partitioning the failure counter by source IP so one attacker
   cannot lock a legitimate user on a different address, which needs a failure table and an eviction policy.
   Say so in the login XML doc rather than implying S10 solved it.
-- **Self-service `POST /auth/password/forgot`.** Needs SMTP — see item 13.
+- **Self-service `POST /auth/password/forgot`.** Needs SMTP — see item 13. *(S12 added SMTP and self-service
+  recovery, portal-only at `/portal/forgot`; see [S12-email-delivery.md](S12-email-delivery.md).)*
 - **Email verification on registration.** Same dependency, and an invite already proves an operator vouched
   for the address.
 - **Per-user quotas.** One user can still fill the volume for everyone. Worth a plan; not this one.

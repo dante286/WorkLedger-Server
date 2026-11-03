@@ -54,8 +54,21 @@ Three projects (`WorkLedger-Server.slnx`), .NET 10, Minimal APIs, EF Core + Npgs
   out of the fallback policy.
   - **The service layer (S11 group A).** The account rules live in `Auth/` services —
     `CredentialCheck`, `RegistrationService`, `AccountSelfService`, `AccountDeletion`, `AdminOperations`,
-    `InviteService`, `PasswordResetService`, `ServerSetup` — and both the JSON endpoints and the portal
-    pages are thin callers of them. Add a rule to the service, never to one of its two callers.
+    `InviteService`, `PasswordResetService`, `ServerSetup`, and from S12 `SelfServiceRecovery` — and both the
+    JSON endpoints and the portal pages are thin callers of them. Add a rule to the service, never to one of
+    its two callers.
+  - **Outbound email (S12).** `Email/`: `EmailOptions` behind `Email:Enabled` (default **false**, and it
+    requires the portal, because every link goes to it), `SmtpEmailSender` on MailKit (STARTTLS **required**,
+    never `Auto`/`StartTlsWhenAvailable`; no `ProtocolLogger`; plain text only), `EmailOutbox` (a bounded
+    in-memory `Channel<EmailWork>`) drained by `EmailDeliveryService`, `EmailMessages` (every template), and
+    `SecurityNotices` (the password-changed notice). **Off means no mail worker at all and no other
+    `Email:*` key read**; with it off `EmailOutbox.TryEnqueue` throws, so every caller checks
+    `EmailOptions.Enabled` first and refuses a forged request before issuing anything. Delivery log lines
+    carry the message kind, user id and SMTP codes — never an address or the relay's reply text, which
+    quotes recipients; `/portal/admin/email` (`RelayCheck`) is the one place that text is shown.
+  - **Portal form fields are bound properties, never handler arguments** (WL-231): MVC's Trace-level
+    "executing handler … with arguments" line prints argument values, so a password or address taken as
+    one would reach the log the moment someone turns logging up.
   - **The web portal (S11).** Razor Pages under `/portal` (`Pages/Portal/`), wired by `Web/PortalSetup.cs`,
     behind `Web:Enabled` (default **false** — off means no page, asset, header or persisted key ring is
     mapped) and a required `Web:PublicBaseUrl` (`WebOptions`, resolved eagerly; the only source of absolute
@@ -68,7 +81,7 @@ Three projects (`WorkLedger-Server.slnx`), .NET 10, Minimal APIs, EF Core + Npgs
     account features are portal-only. `/admin/*` is *not* one; it stays the operators' scripting interface.
 - **`tests/WorkLedger.Server.Tests`** — xUnit, `WebApplicationFactory<Program>` + Testcontainers.
 
-`plans/` holds the S0–S12 build plans (S0–S11 shipped; S12, email delivery, is planned and not built)
+`plans/` holds the S0–S12 build plans (all shipped; S12 is email delivery)
 and is the design record — `plans/README.md` explains the cross-repo contract handoff and house style.
 **`plans/S11-client-handoff.md` is the authoritative statement of the current wire contract** (it
 supersedes S10's, which the client never applied, and the client applied it at `eb743d4`);
@@ -87,13 +100,20 @@ document deployment behaviour rather than here. Three things that bite when edit
   as unset everywhere — compose renders an unset optional override as `""`. `AuthOptions`, `WebOptions`
   and `Program.cs`'s own `Configured()` (the JWT keys, `Database:MigrateOnStartup`) follow the same rule;
   a new key read with a bare `configuration[...]`/`GetValue` would not. `Program.cs` resolves
-  `JwtOptions`, `BootstrapOptions`, `PostgresConnection`, `AuthOptions`, `TrustedProxies` and
-  `WebOptions` eagerly right after `Build()` so misconfiguration exits the container naming the key
-  instead of 500ing on a device's first sync.
+  `JwtOptions`, `BootstrapOptions`, `PostgresConnection`, `AuthOptions`, `TrustedProxies`, `WebOptions`
+  and `EmailOptions` eagerly right after `Build()` so misconfiguration exits the container naming the key
+  instead of 500ing on a device's first sync. `EmailOptions` never contacts the relay: one that is down
+  must not stop sync.
+- **Mail is an in-memory queue by design; there is no outbox table, because it would store raw tokens.**
+  The database holds only SHA-256s of invite and reset tokens (`SingleUseToken`), and a persisted message
+  carries the link. Mail pending at shutdown is lost, and that is accepted: every message can be reissued.
+  Don't "fix" it with a table.
 - `scripts/smoke-test.ps1` is the only test that exercises the deployment (image, compose wiring,
   migrate-on-boot, a container-minted token, and — when capabilities advertise a `portalUrl` — that the
   image serves portal pages with their CSP and static assets). It writes real rows, deletes the accounts
-  it created, and leaves one redeemed `Invites` row per run by design.
+  it created, and leaves one redeemed `Invites` row per run by design (two with `-WithMailpit`, which
+  layers `docker-compose.mailpit.yml` on and checks MailKit inside the image: the CA bundle, an emailed
+  reset, and a non-ASCII-domain recipient under invariant globalization).
 - Every optional key in `docker-compose.yml` is passed through **blank** (`${Key:-}`), so a key missing
   from its `environment:` block is silently ignored under compose however `.env` sets it. Adding a
   config key means adding it there too, and to `.env.example` and README's table (S11 found four S10
@@ -123,6 +143,14 @@ never authenticates a portal page. The cookie carries `user_id` and `stamp` and 
 disabled)` per request, and `TokenRevocation.EvictUserAsync` evicts that key with the user's device keys,
 so every revoking path ends portal sessions immediately too. A portal session creates no `Device` row, and
 portal sign-in goes through `CredentialCheck`, so it shares the per-user lockout with `/auth/login`.
+**With email on (S12), a user recovers a lost password at `/portal/forgot`**, portal-only: the page answers
+identically for every address and only queues a `ForgotPasswordRequest`, and `SelfServiceRecovery` decides
+off the request path, in the delivery worker (an account with a password, not suspended, outside
+`Email:ResetCooldownMinutes`), so neither the page's content nor its timing says who has an account. A
+self-service reset is a `PasswordResets` row with `SelfService` set, through the same
+`PasswordResetService.IssueAsync`, so it still kills an outstanding admin link. Every password change sends
+`SecurityNotices`' notice — **including `POST /auth/password`**, the one deliberate new behaviour on a
+compatibility route (signed off in WL-213; its status and body are unchanged).
 The three sections below are the detail; the rules live as XML docs on
 `CredentialCheck`, `AccountSelfService`, `AccountDeletion`, `AdminOperations`, `TokenRevocation`,
 `JwtTokenService`, `PortalSession` and `User`. Since S11 the endpoint classes in `Auth/` are thin callers of those services
