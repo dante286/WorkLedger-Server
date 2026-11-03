@@ -5,19 +5,21 @@
   </ItemGroup>
 
   <!-- EF Core moves in lockstep with the ASP.NET packages. DataProtection.EntityFrameworkCore (S11's
-       persisted key ring) requires EF Core >= its own version, and its 10.0.4 build pulls a
-       System.Security.Cryptography.Xml flagged NU1903 - so everything is on 10.0.10 rather than that one
-       left behind. Relational is referenced directly only so Npgsql's older minimum cannot pull a second
+       persisted key ring) requires EF Core >= its own version, and it pulls System.Security.Cryptography.Xml
+       at its own version - which NU1903 has flagged twice: at 10.0.4, and at 10.0.10 (CVE-2026-96958/9/60,
+       fixed in 10.0.13; WL-232). So everything is on 10.0.14 rather than one package left behind. The
+       server itself runs the shared framework's copy (the Web SDK prunes the package), so the runtime image
+       has to be current too; the test project restores the package, which is where the warning shows. Relational is referenced directly only so Npgsql's older minimum cannot pull a second
        copy into the test project (MSB3277); drop it once Npgsql's own dependency catches up. -->
   <ItemGroup>
-    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.10" />
-    <PackageReference Include="Microsoft.AspNetCore.DataProtection.EntityFrameworkCore" Version="10.0.10" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.10" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.10">
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.14" />
+    <PackageReference Include="Microsoft.AspNetCore.DataProtection.EntityFrameworkCore" Version="10.0.14" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.14" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.14">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.10" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.14" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
   </ItemGroup>
 
