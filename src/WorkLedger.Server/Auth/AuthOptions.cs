@@ -39,6 +39,10 @@ namespace WorkLedger.Server.Auth;
 /// The life of a password-reset token — deliberately much shorter than an invite's, and the unit
 /// difference is the reminder of that. See <see cref="DefaultPasswordResetExpiryHours"/>.
 /// </param>
+/// <param name="SelfServiceResetExpiryMinutes">
+/// The life of a reset the user asked for themselves at <c>/portal/forgot</c> (S12). See
+/// <see cref="DefaultSelfServiceResetExpiryMinutes"/>.
+/// </param>
 public sealed record AuthOptions(
     bool RegistrationEnabled,
     bool SignupSecretEnabled,
@@ -49,7 +53,8 @@ public sealed record AuthOptions(
     double LockoutMinutes,
     int StampCacheSeconds,
     int LoginRateLimitPerMinute,
-    double LoginRateLimitWindowSeconds)
+    double LoginRateLimitWindowSeconds,
+    int SelfServiceResetExpiryMinutes = AuthOptions.DefaultSelfServiceResetExpiryMinutes)
 {
     /// <summary>
     /// The ceiling on a submitted password, well above any real passphrase. Its job is not policy but
@@ -72,6 +77,13 @@ public sealed record AuthOptions(
     /// survive a time zone and an overnight.
     /// </summary>
     public const int DefaultPasswordResetExpiryHours = 24;
+
+    /// <summary>
+    /// How long a self-service reset lasts. <b>Minutes, where an admin-issued one gets hours</b>: the
+    /// person who asked is the person who clicks, usually within a minute of asking. The 24-hour window
+    /// exists for a handover during a conversation that may span time zones, which does not happen here.
+    /// </summary>
+    public const int DefaultSelfServiceResetExpiryMinutes = 60;
 
     public const int DefaultMaxFailedLogins = 5;
     public const double DefaultLockoutMinutes = 15;
@@ -134,7 +146,9 @@ public sealed record AuthOptions(
         StampCacheSeconds: Number(configuration, "Auth:StampCacheSeconds", DefaultStampCacheSeconds),
         LoginRateLimitPerMinute: Number(configuration, "Auth:LoginRateLimitPerMinute", DefaultLoginRateLimitPerMinute),
         LoginRateLimitWindowSeconds: Fraction(
-            configuration, "Auth:LoginRateLimitWindowSeconds", DefaultLoginRateLimitWindowSeconds));
+            configuration, "Auth:LoginRateLimitWindowSeconds", DefaultLoginRateLimitWindowSeconds),
+        SelfServiceResetExpiryMinutes: Number(
+            configuration, "Auth:SelfServiceResetExpiryMinutes", DefaultSelfServiceResetExpiryMinutes));
 
     private static bool Flag(IConfiguration configuration, string key, string alias, bool @default)
     {

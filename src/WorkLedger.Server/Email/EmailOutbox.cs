@@ -31,7 +31,7 @@ namespace WorkLedger.Server.Email;
 /// </summary>
 public sealed class EmailOutbox
 {
-    private readonly Channel<OutgoingEmail>? _channel;
+    private readonly Channel<EmailWork>? _channel;
 
     public EmailOutbox(EmailOptions options)
     {
@@ -39,7 +39,7 @@ public sealed class EmailOutbox
         {
             // Wait, not DropOldest/DropNewest: with Wait, TryWrite on a full channel returns false and the
             // caller learns of it. The drop modes accept the write and silently discard a message instead.
-            _channel = Channel.CreateBounded<OutgoingEmail>(new BoundedChannelOptions(options.QueueCapacity)
+            _channel = Channel.CreateBounded<EmailWork>(new BoundedChannelOptions(options.QueueCapacity)
             {
                 FullMode = BoundedChannelFullMode.Wait,
                 SingleReader = true,
@@ -48,15 +48,15 @@ public sealed class EmailOutbox
     }
 
     /// <summary>
-    /// Queues <paramref name="message"/> without waiting. False means the queue is full and the message was
-    /// not taken.
+    /// Queues <paramref name="work"/> — a message, or a forgotten-password request — without waiting. False
+    /// means the queue is full and it was not taken.
     /// </summary>
-    public bool TryEnqueue(OutgoingEmail message) =>
-        Queue.Writer.TryWrite(message);
+    public bool TryEnqueue(EmailWork work) =>
+        Queue.Writer.TryWrite(work);
 
-    internal ChannelReader<OutgoingEmail> Reader => Queue.Reader;
+    internal ChannelReader<EmailWork> Reader => Queue.Reader;
 
-    private Channel<OutgoingEmail> Queue =>
+    private Channel<EmailWork> Queue =>
         _channel ?? throw new InvalidOperationException(
             "Email is not configured (Email:Enabled is off), so nothing may be queued for delivery.");
 }

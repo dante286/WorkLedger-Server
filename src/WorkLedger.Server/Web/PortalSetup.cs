@@ -43,10 +43,11 @@ internal static class PortalSetup
 
     /// <summary>
     /// The pages that take a credential from someone who may not have a session — a password, the
-    /// operator's secret, an invite or a reset token. Each is anonymous and rate-limited.
+    /// operator's secret, an invite or a reset token — plus <c>/portal/forgot</c> (S12), which takes none but
+    /// makes the server send mail. Each is anonymous and rate-limited, sharing the per-IP bucket.
     /// </summary>
     private static readonly string[] AnonymousCredentialPages =
-        ["/Portal/Login", "/Portal/Setup", "/Portal/Register", "/Portal/Reset"];
+        ["/Portal/Login", "/Portal/Setup", "/Portal/Register", "/Portal/Reset", "/Portal/Forgot"];
 
     /// <summary>
     /// Every page that works without a session: the credential pages, sign-out, access-denied, and the

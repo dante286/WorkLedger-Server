@@ -84,6 +84,11 @@ public enum EmailSecurity
 /// <c>Email:QueueCapacity</c>: how many messages <see cref="EmailOutbox"/> holds before it refuses more.
 /// Default 100.
 /// </param>
+/// <param name="ResetCooldownMinutes">
+/// <c>Email:ResetCooldownMinutes</c>: after a self-service reset is issued for a user, how long further
+/// <c>/portal/forgot</c> requests for that user send nothing. Default 5; <c>0</c> turns the cooldown off.
+/// See <c>SelfServiceRecovery</c> for why it exists.
+/// </param>
 public sealed record EmailOptions(
     bool Enabled,
     string? SmtpHost,
@@ -93,11 +98,15 @@ public sealed record EmailOptions(
     string? SmtpPassword,
     string? FromAddress,
     string FromName,
-    int QueueCapacity)
+    int QueueCapacity,
+    int ResetCooldownMinutes = EmailOptions.DefaultResetCooldownMinutes)
 {
     public const int DefaultSmtpPort = 587;
     public const string DefaultFromName = "WorkLedger";
     public const int DefaultQueueCapacity = 100;
+    public const int DefaultResetCooldownMinutes = 5;
+
+    public TimeSpan ResetCooldown => TimeSpan.FromMinutes(ResetCooldownMinutes);
 
     /// <summary>The state of a deployment that never turned email on.</summary>
     public static EmailOptions Disabled { get; } = new(
@@ -197,6 +206,14 @@ public sealed record EmailOptions(
                 $"{DefaultQueueCapacity}).");
         }
 
+        var cooldown = Number(configuration, "Email:ResetCooldownMinutes", DefaultResetCooldownMinutes);
+        if (cooldown < 0)
+        {
+            throw new InvalidOperationException(
+                "Email:ResetCooldownMinutes must be a whole number of minutes, zero or more (or unset, for " +
+                $"{DefaultResetCooldownMinutes}). Zero turns the self-service reset cooldown off.");
+        }
+
         return new EmailOptions(
             Enabled: true,
             SmtpHost: host,
@@ -206,7 +223,8 @@ public sealed record EmailOptions(
             SmtpPassword: password,
             FromAddress: from,
             FromName: Configured(configuration, "Email:FromName") ?? DefaultFromName,
-            QueueCapacity: capacity);
+            QueueCapacity: capacity,
+            ResetCooldownMinutes: cooldown);
     }
 
     /// <summary>
@@ -218,7 +236,7 @@ public sealed record EmailOptions(
         builder.Append(CultureInfo.InvariantCulture, $"Enabled = {Enabled}, SmtpHost = {SmtpHost}, SmtpPort = {SmtpPort}, ");
         builder.Append(CultureInfo.InvariantCulture, $"SmtpSecurity = {SmtpSecurity}, SmtpUsername = {SmtpUsername}, ");
         builder.Append(CultureInfo.InvariantCulture, $"SmtpPassword = {(SmtpPassword is null ? "(unset)" : "(set)")}, ");
-        builder.Append(CultureInfo.InvariantCulture, $"FromAddress = {FromAddress}, FromName = {FromName}, QueueCapacity = {QueueCapacity}");
+        builder.Append(CultureInfo.InvariantCulture, $"FromAddress = {FromAddress}, FromName = {FromName}, QueueCapacity = {QueueCapacity}, ResetCooldownMinutes = {ResetCooldownMinutes}");
         return true;
     }
 

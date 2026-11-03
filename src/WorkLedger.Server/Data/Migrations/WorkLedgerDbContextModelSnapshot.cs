@@ -138,6 +138,9 @@ namespace WorkLedger.Server.Data.Migrations
                     b.Property<DateTime?>("RedeemedAtUtc")
                         .HasColumnType("timestamptz");
 
+                    b.Property<bool>("SelfService")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("TokenHash")
                         .IsRequired()
                         .HasColumnType("text");

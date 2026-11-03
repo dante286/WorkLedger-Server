@@ -317,6 +317,7 @@ portable to any relay, and Resend supports it fully.
     - **Only self-service issues count toward the cooldown, and only self-service issues are subject to it.**
       An admin-issued reset never waits. A self-service issue does still invalidate an admin-issued link, as
       every new issue does; document that on the item 15 column.
+    - *As built in C:* `0` turns the cooldown off, and a negative value fails startup naming the key.
 15. **Schema: `PasswordResets.SelfService` (`bool`, not null, default `false`)**, one migration.
     - The cooldown needs to tell self-service issues from admin issues. `CreatedByUserId` can't do that:
       `null` already means "the issuing admin has since been deleted" (`PasswordReset`'s XML doc).
@@ -325,6 +326,8 @@ portable to any relay, and Resend supports it fully.
       than a second issue method. Keeping one path keeps "invalidate outstanding resets in the same
       transaction" in one place.
     - Audit: a `self-service-reset-issued` line with the user's id.
+    - *As built in C:* a self-service row's `CreatedByUserId` is null, since no admin issued it; `SelfService`
+      is what tells the two kinds apart.
 16. **Self-service expiry: `Auth:SelfServiceResetExpiryMinutes`, default 60.** This lives in `AuthOptions`, next
     to `PasswordResetExpiryHours`, because it is account policy.
     - It differs because the person who asked is the one who clicks, usually within a minute.

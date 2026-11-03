@@ -1,0 +1,36 @@
+@page
+@model WorkLedger.Server.Pages.Portal.ForgotModel
+@{
+    ViewData["Title"] = "Forgot your password?";
+}
+<section class="card narrow">
+    <h1>Forgot your password?</h1>
+
+    @if (Model.Sent)
+    {
+        <p class="notice" role="status">
+            If an account exists for that address, we've sent a link. It expires in @Model.ExpiryMinutes minutes.
+        </p>
+        <p class="muted">
+            Nothing yet? Check your spam folder. Asking again within a few minutes won't send another one.
+        </p>
+        <p><a href="/portal/login">Back to sign in</a></p>
+    }
+    else
+    {
+        <p class="muted">Enter the address you sign in with, and we'll email you a link to choose a new password.</p>
+
+        @if (Model.Error is not null)
+        {
+            <p class="alert" role="alert">@Model.Error</p>
+        }
+
+        <form method="post">
+            <label for="address">Email</label>
+            <input id="address" name="Address" type="email" autocomplete="username" required autofocus>
+            <button type="submit" class="primary">Send me a link</button>
+        </form>
+        <p class="muted">If you can't get an email, ask your administrator for a reset link instead.</p>
+        <p><a href="/portal/login">Back to sign in</a></p>
+    }
+</section>

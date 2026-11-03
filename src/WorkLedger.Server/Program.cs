@@ -90,6 +90,7 @@ builder.Services.AddScoped<AdminOperations>();
 builder.Services.AddScoped<InviteService>();
 builder.Services.AddScoped<PasswordResetService>();
 builder.Services.AddScoped<RegistrationService>();
+builder.Services.AddScoped<SelfServiceRecovery>();
 
 // The web portal (S11): Razor Pages under /portal behind Web:Enabled, default off. Registered either way
 // and inert until mapped below — see PortalSetup for why the gate is on the pipeline, not here.

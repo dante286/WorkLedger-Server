@@ -38,6 +38,7 @@ public class EmailStartupTests
         { "Email:SmtpPort", "0", ["Email:SmtpPort"] },
         { "Email:SmtpPort", "five-eight-seven", ["Email:SmtpPort"] },
         { "Email:QueueCapacity", "0", ["Email:QueueCapacity"] },
+        { "Email:ResetCooldownMinutes", "-1", ["Email:ResetCooldownMinutes"] },
     };
 
     [Theory]
