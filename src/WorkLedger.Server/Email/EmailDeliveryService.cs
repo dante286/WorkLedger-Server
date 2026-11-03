@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Net.Sockets;
+using Microsoft.Extensions.DependencyInjection;
 using MailKit;
 using MailKit.Net.Smtp;
 using MailKit.Security;
@@ -7,8 +8,9 @@ using MailKit.Security;
 namespace WorkLedger.Server.Email;
 
 /// <summary>
-/// Drains <see cref="EmailOutbox"/> into <see cref="IEmailSender"/>, one message at a time. With email off
-/// it returns at once and never touches the queue.
+/// Drains <see cref="EmailOutbox"/> into <see cref="IEmailSender"/>, one message at a time. <b>It exists only
+/// while email is on</b>: with <c>Email:Enabled</c> off it is never constructed and never started (see
+/// <c>EmailSetup</c>), so an operator who has not turned email on has no mail worker in their process at all.
 /// <para>
 /// <b>Only transient failures are retried</b>: up to three more attempts, after about 5 seconds, 30 seconds
 /// and 2 minutes, for a connection that failed or dropped, a timeout, or an SMTP <b>4xx</b> reply. A
@@ -35,27 +37,24 @@ public sealed class EmailDeliveryService : BackgroundService
     public static readonly IReadOnlyList<TimeSpan> DefaultRetryDelays =
         [TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(2)];
 
-    private readonly EmailOptions _options;
     private readonly EmailOutbox _outbox;
     private readonly IEmailSender _sender;
     private readonly ILogger<EmailDeliveryService> _logger;
     private readonly IReadOnlyList<TimeSpan> _retryDelays;
 
-    public EmailDeliveryService(
-        EmailOptions options, EmailOutbox outbox, IEmailSender sender, ILogger<EmailDeliveryService> logger)
-        : this(options, outbox, sender, logger, DefaultRetryDelays)
+    [ActivatorUtilitiesConstructor]
+    public EmailDeliveryService(EmailOutbox outbox, IEmailSender sender, ILogger<EmailDeliveryService> logger)
+        : this(outbox, sender, logger, DefaultRetryDelays)
     {
     }
 
     /// <summary>For tests, which cannot wait two and a half minutes to watch a message give up.</summary>
     public EmailDeliveryService(
-        EmailOptions options,
         EmailOutbox outbox,
         IEmailSender sender,
         ILogger<EmailDeliveryService> logger,
         IReadOnlyList<TimeSpan> retryDelays)
     {
-        _options = options;
         _outbox = outbox;
         _sender = sender;
         _logger = logger;
@@ -64,11 +63,6 @@ public sealed class EmailDeliveryService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (!_options.Enabled)
-        {
-            return;
-        }
-
         try
         {
             await foreach (var message in _outbox.Reader.ReadAllAsync(stoppingToken))

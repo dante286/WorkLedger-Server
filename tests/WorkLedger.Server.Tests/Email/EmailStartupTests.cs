@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using WorkLedger.Server.Email;
 using WorkLedger.Server.Tests.Web;
@@ -100,6 +101,24 @@ public class EmailStartupTests
         Assert.Throws<InvalidOperationException>(() =>
             host.Services.GetRequiredService<EmailOutbox>().TryEnqueue(
                 new OutgoingEmail(EmailKind.Test, null, "someone@example.test", new EmailContent("s", "b"))));
+    }
+
+    /// <summary>
+    /// Off means no mail worker at all, not one that idles; on means exactly one. Checked on the started
+    /// host, where the hosted services are the ones that actually run.
+    /// </summary>
+    [Theory]
+    [InlineData(false, 0)]
+    [InlineData(true, 1)]
+    public async Task TheMailWorker_RunsOnlyWhileEmailIsOn(bool on, int workers)
+    {
+        using var host = on ? Host(Minimal) : Host(("Email:Enabled", "false"));
+        await host.CreateClient().GetAsync("/health");
+
+        var running = host.Services.GetServices<IHostedService>().OfType<EmailDeliveryService>().ToList();
+
+        Assert.Equal(workers, running.Count);
+        Assert.All(running, worker => Assert.False(worker.ExecuteTask?.IsCompleted));
     }
 
     /// <summary>The Resend example's values, with every other key blank as compose renders it.</summary>

@@ -25,9 +25,8 @@ namespace WorkLedger.Server.Email;
 /// slow portal.
 /// </para>
 /// <para>
-/// Registered whether or not email is on, like the portal's services (see <c>PortalSetup</c> for why
-/// registration cannot depend on configuration); with email off there is no channel, and enqueueing is a
-/// programming error rather than a full queue, because nothing should offer to send mail then.
+/// With email off there is no channel and nothing drains one (see <c>EmailSetup</c>), so enqueueing is a
+/// programming error rather than a full queue: nothing should offer to send mail then.
 /// </para>
 /// </summary>
 public sealed class EmailOutbox

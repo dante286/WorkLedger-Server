@@ -114,22 +114,6 @@ public class EmailDeliveryServiceTests
         Assert.Contains("AdminPasswordReset", printed);
     }
 
-    [Fact]
-    public async Task WithEmailOff_TheWorkerReturnsAtOnce()
-    {
-        var sender = new ScriptedSender(_ => Task.CompletedTask);
-        using var service = new EmailDeliveryService(
-            EmailOptions.Disabled, new EmailOutbox(EmailOptions.Disabled), sender,
-            LoggerFactory.Create(_ => { }).CreateLogger<EmailDeliveryService>(), []);
-
-        await service.StartAsync(CancellationToken.None);
-
-        // .NET 10 runs ExecuteAsync off the starting thread, so "at once" is "without being stopped".
-        await service.ExecuteTask!.WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.True(service.ExecuteTask.IsCompletedSuccessfully);
-        Assert.Equal(0, sender.Attempts);
-    }
-
     private static OutgoingEmail Message() =>
         new(EmailKind.AdminPasswordReset, 42, Recipient, new EmailContent("Reset", $"Your code: {Token}"));
 
@@ -155,7 +139,7 @@ public class EmailDeliveryServiceTests
         var outbox = new EmailOutbox(Enabled);
         using var factory = LoggerFactory.Create(builder => builder.AddProvider(logs).SetMinimumLevel(LogLevel.Trace));
         using var service = new EmailDeliveryService(
-            Enabled, outbox, sender, factory.CreateLogger<EmailDeliveryService>(),
+            outbox, sender, factory.CreateLogger<EmailDeliveryService>(),
             [TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero]);
 
         await service.StartAsync(CancellationToken.None);
