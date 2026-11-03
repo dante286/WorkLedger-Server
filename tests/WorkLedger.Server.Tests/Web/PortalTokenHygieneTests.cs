@@ -21,6 +21,11 @@ namespace WorkLedger.Server.Tests.Web;
 /// than hide below the production threshold. That is stricter than any deployment runs, deliberately: an
 /// operator turning logging up to chase a problem must not start writing credentials to disk.
 /// </para>
+/// <para>
+/// The same sink also covers the signed-in forms that take a password or an address: MVC's Trace-level
+/// "executing handler method … with arguments" line prints every handler argument, so those values must
+/// arrive as bound properties instead.
+/// </para>
 /// </summary>
 [Collection(nameof(UserAccountsCollection))]
 public partial class PortalTokenHygieneTests(UserAccountsFixture fixture) : IAsyncLifetime
@@ -85,6 +90,74 @@ public partial class PortalTokenHygieneTests(UserAccountsFixture fixture) : IAsy
         Assert.DoesNotContain(logs.Lines, l => l.Contains(reset, StringComparison.Ordinal));
     }
 
+    [Fact]
+    public async Task PasswordsAndAddresses_PostedToTheSignedInForms_NeverReachTheLog()
+    {
+        const string Pat = "pat@example.com";
+        const string PatPassword = "pat's own long passphrase";
+        const string Victim = "victim@example.com";
+        const string Invitee = "invitee@example.com";
+        const string Confirm = "the new passphrase, again";
+        await SeedUserAsync(Admin, isAdmin: true);
+        var samId = await SeedUserAsync(Sam);
+        var patId = await SeedUserAsync(Pat, password: PatPassword);
+        var victimId = await SeedUserAsync(Victim);
+        var logs = new CapturedLogs();
+        using var baseHost = fixture.CreateHost(
+            ("Web:Enabled", "true"),
+            ("Web:PublicBaseUrl", "https://ledger.example.test"),
+            ("Auth:LoginRateLimitPerMinute", "200"));
+        using var host = baseHost.WithWebHostBuilder(builder => builder.ConfigureLogging(logging => logging
+            .AddProvider(logs)
+            .AddFilter<CapturedLogs>(category: null, LogLevel.Trace)));
+
+        var sam = PortalBrowser.Open(host);
+        Assert.Equal(HttpStatusCode.Redirect, (await sam.SignInAsync(Sam, Password)).StatusCode);
+        var mismatched = await sam.SubmitAsync(
+            "/portal/account/security?handler=Password",
+            ("currentPassword", Password), ("newPassword", NewPassword), ("confirmPassword", Confirm));
+        var changed = await sam.SubmitAsync(
+            "/portal/account/security?handler=Password",
+            ("currentPassword", Password), ("newPassword", NewPassword), ("confirmPassword", NewPassword));
+
+        var pat = PortalBrowser.Open(host);
+        Assert.Equal(HttpStatusCode.Redirect, (await pat.SignInAsync(Pat, PatPassword)).StatusCode);
+        var deletedOwn = await pat.SubmitAsync(
+            "/portal/account/delete", ("password", PatPassword), ("confirmEmail", Pat));
+
+        var operatorBrowser = PortalBrowser.Open(host);
+        Assert.Equal(HttpStatusCode.Redirect, (await operatorBrowser.SignInAsync(Admin, Password)).StatusCode);
+        var invited = await operatorBrowser.SubmitAsync(
+            "/portal/admin/invites?handler=Create", ("email", Invitee), ("note", "for the new starter"));
+        var deletedOther = await operatorBrowser.SubmitAsync(
+            "/portal/admin/users?handler=Delete", ("userId", victimId.ToString()), ("confirmEmail", Victim));
+
+        // Each form really ran its handler, so the log below saw every value posted to it.
+        Assert.Contains("don&#x27;t match", await mismatched.Content.ReadAsStringAsync());
+        Assert.Contains("Your password has been changed", await changed.Content.ReadAsStringAsync());
+        Assert.Equal(HttpStatusCode.Redirect, deletedOwn.StatusCode);
+        Assert.Contains("register#invite=", await invited.Content.ReadAsStringAsync());
+        Assert.Contains($"Deleted {Victim}", await deletedOther.Content.ReadAsStringAsync());
+        using (var db = fixture.CreateDbContext())
+        {
+            Assert.NotEqual(PasswordVerification.Failed, new PasswordService().Verify(
+                (await db.Users.SingleAsync(u => u.Id == samId)).PasswordHash!, NewPassword));
+            Assert.False(await db.Users.AnyAsync(u => u.Id == patId || u.Id == victimId));
+            Assert.Equal(Invitee.ToUpperInvariant(), (await db.Invites.SingleAsync()).NormalizedEmail);
+        }
+
+        // The handler-execution lines exist at this level, so their absence of values is a real check.
+        Assert.Contains(logs.Lines, l => l.Contains("Executing handler method", StringComparison.Ordinal));
+
+        foreach (var line in logs.Lines)
+        {
+            foreach (var secret in new[] { Password, NewPassword, Confirm, PatPassword, Pat, Victim, Invitee })
+            {
+                Assert.False(line.Contains(secret, StringComparison.OrdinalIgnoreCase), "LEAK: " + line);
+            }
+        }
+    }
+
     private static string LinkToken(Regex link, string html)
     {
         var match = link.Match(html);
@@ -98,14 +171,14 @@ public partial class PortalTokenHygieneTests(UserAccountsFixture fixture) : IAsy
     [GeneratedRegex("value=\"https://ledger\\.example\\.test/portal/register#invite=([A-Za-z0-9_-]+)\"")]
     private static partial Regex InviteLink();
 
-    private async Task<int> SeedUserAsync(string email, bool isAdmin = false)
+    private async Task<int> SeedUserAsync(string email, bool isAdmin = false, string password = Password)
     {
         using var db = fixture.CreateDbContext();
         var user = new User
         {
             Email = email,
             NormalizedEmail = email.ToUpperInvariant(),
-            PasswordHash = new PasswordService().Hash(Password),
+            PasswordHash = new PasswordService().Hash(password),
             IsAdmin = isAdmin,
             CreatedAt = DateTime.UtcNow,
         };
