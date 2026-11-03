@@ -3,6 +3,7 @@ using Microsoft.Extensions.Caching.Memory;
 using WorkLedger.Contracts.Auth;
 using WorkLedger.Server.Data;
 using WorkLedger.Server.Data.Entities;
+using WorkLedger.Server.Email;
 
 namespace WorkLedger.Server.Auth;
 
@@ -32,7 +33,8 @@ public sealed class AccountSelfService(
     AuthOptions auth,
     PasswordService passwords,
     IMemoryCache cache,
-    AccountDeletion accountDeletion)
+    AccountDeletion accountDeletion,
+    SecurityNotices notices)
 {
     /// <summary>
     /// The devices signed in to <paramref name="userId"/>, most recently seen first.
@@ -119,6 +121,10 @@ public sealed class AccountSelfService(
     /// mismatch, the caller is already authenticated so there is nothing to hide, and "wrong password"
     /// would send an operator hunting for a password that never existed.
     /// </para>
+    /// <para>
+    /// A successful change sends the password-changed notice (S12) after the commit, whether it came from
+    /// the portal or <c>POST /auth/password</c> — see <see cref="SecurityNotices"/>.
+    /// </para>
     /// </summary>
     public async Task<SelfServiceResult> ChangePasswordAsync(
         int userId, string? currentPassword, string? newPassword, CancellationToken cancellationToken)
@@ -144,14 +150,16 @@ public sealed class AccountSelfService(
             return new SelfServiceResult(SelfServiceOutcome.InvalidPassword, Error: validationError);
         }
 
+        var now = DateTime.UtcNow;
         user.PasswordHash = passwords.Hash(newPassword ?? string.Empty);
         user.SecurityStamp = Guid.NewGuid().ToString();
         user.FailedLoginCount = 0;
         user.LockoutEndUtc = null;
-        user.UpdatedAt = DateTime.UtcNow;
+        user.UpdatedAt = now;
         await db.SaveChangesAsync(cancellationToken);
 
         await TokenRevocation.EvictUserAsync(db, cache, user.Id, cancellationToken);
+        notices.PasswordChanged(user, now);
 
         return new SelfServiceResult(SelfServiceOutcome.Done, user);
     }
