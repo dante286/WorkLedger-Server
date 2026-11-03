@@ -20,10 +20,29 @@
 {
     <section class="card secret" aria-labelledby="reset-heading">
         <h2 id="reset-heading">Password reset link for @Model.ResetFor</h2>
-        <p>
-            <strong>This link is shown once.</strong> It is not stored anywhere it could be shown again —
-            copy it now and send it to @Model.ResetFor yourself. No email is sent.
-        </p>
+        @switch (Model.ResetEmailQueued)
+        {
+            case true:
+                <p class="notice" role="status">Queued for delivery to @Model.ResetFor.</p>
+                <p>
+                    <strong>This link is shown once.</strong> Copy it anyway, in case the email is slow or
+                    lands in spam: it is not stored anywhere it could be shown again.
+                </p>
+                break;
+            case false:
+                <p class="alert" role="status">The mail queue is full, so this reset wasn't emailed.</p>
+                <p>
+                    <strong>This link is shown once.</strong> It is not stored anywhere it could be shown
+                    again — copy it now and send it to @Model.ResetFor yourself.
+                </p>
+                break;
+            default:
+                <p>
+                    <strong>This link is shown once.</strong> It is not stored anywhere it could be shown again —
+                    copy it now and send it to @Model.ResetFor yourself. No email is sent.
+                </p>
+                break;
+        }
         <div class="copy-row">
             <input id="reset-link" type="text" readonly value="@Model.ResetLink" aria-label="Password reset link">
             <button type="button" class="secondary" data-copy="reset-link" hidden>Copy</button>
@@ -93,6 +112,13 @@
                             <input type="hidden" name="userId" value="@user.Id">
                             <button type="submit" class="secondary">Password reset link</button>
                         </form>
+                        @if (Model.EmailEnabled && !string.IsNullOrEmpty(user.Email))
+                        {
+                            <form method="post" asp-page-handler="ResetAndEmail" class="inline">
+                                <input type="hidden" name="userId" value="@user.Id">
+                                <button type="submit" class="secondary">Issue reset and email it</button>
+                            </form>
+                        }
                         @if (!isSelf)
                         {
                             <details class="danger-zone">

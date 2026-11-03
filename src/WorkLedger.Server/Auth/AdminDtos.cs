@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using WorkLedger.Contracts.Auth;
 
 namespace WorkLedger.Server.Auth;
@@ -66,14 +67,28 @@ public sealed record AdminDeleteUserRequest(string ConfirmEmail);
 /// exist to stop being.
 /// </param>
 /// <param name="Note">Free-form, for the operator's own benefit when reading the list later.</param>
-public sealed record InviteRequest(string? Email = null, int? ExpiresInDays = null, string? Note = null);
+/// <param name="SendEmail">
+/// Also queue the invite to <see cref="Email"/> (S12), which is then required — an open invite has no
+/// recipient. <c>400</c> without an address, <c>409</c> while <c>Email:Enabled</c> is off; neither creates
+/// an invite. The token is returned either way.
+/// </param>
+public sealed record InviteRequest(
+    string? Email = null, int? ExpiresInDays = null, string? Note = null, bool SendEmail = false);
 
 /// <summary>
 /// What creating an invite returns. <b><see cref="Token"/> appears here and nowhere else, ever</b> — the
 /// server stores only a SHA-256 of it, so this response is the single opportunity to capture it. Listing
 /// invites afterwards returns <see cref="InviteSummary"/> alone.
 /// </summary>
-public sealed record InviteResponse(string Token, InviteSummary Invite);
+/// <param name="EmailQueued">
+/// Only present when <see cref="InviteRequest.SendEmail"/> was: whether the message was queued (false means
+/// the mail queue was full, and the token here is the only way to pass the invite on). <b>Omitted otherwise,
+/// so a script that never asks for email sees exactly the response it always has.</b>
+/// </param>
+public sealed record InviteResponse(
+    string Token,
+    InviteSummary Invite,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? EmailQueued = null);
 
 /// <summary>
 /// One invite as <c>GET /admin/invites</c> reports it: everything except the token itself.
@@ -108,7 +123,24 @@ public sealed record InviteSummary(
 /// the person has, which is the first thing they will be asked.
 /// </para>
 /// </summary>
-public sealed record PasswordResetTokenResponse(string Token, DateTime ExpiresAtUtc);
+/// <param name="EmailQueued">
+/// Only present when <see cref="PasswordResetIssueRequest.SendEmail"/> was asked for, exactly as on
+/// <see cref="InviteResponse.EmailQueued"/>.
+/// </param>
+public sealed record PasswordResetTokenResponse(
+    string Token,
+    DateTime ExpiresAtUtc,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? EmailQueued = null);
+
+/// <summary>
+/// The optional body of <c>POST /admin/users/{id}/password-reset</c> (S12). Absent is how every script
+/// written before S12 calls it, and means exactly what it always has.
+/// </summary>
+/// <param name="SendEmail">
+/// Also queue the admin-issued reset message to the target's address. <c>409</c> while
+/// <c>Email:Enabled</c> is off, and then no reset is issued.
+/// </param>
+public sealed record PasswordResetIssueRequest(bool SendEmail = false);
 
 /// <summary>
 /// The body of <c>POST /auth/password/reset</c>: a token an admin issued out of band, and the password

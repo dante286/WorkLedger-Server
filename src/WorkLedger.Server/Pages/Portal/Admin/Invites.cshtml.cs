@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using WorkLedger.Contracts.Auth;
 using WorkLedger.Server.Auth;
 using WorkLedger.Server.Data;
+using WorkLedger.Server.Email;
 using WorkLedger.Server.Web;
 
 namespace WorkLedger.Server.Pages.Portal.Admin;
@@ -17,13 +18,21 @@ namespace WorkLedger.Server.Pages.Portal.Admin;
 /// action answers with the page rather than redirecting — see <see cref="UsersModel"/> for why a
 /// one-time secret must not ride a TempData cookie across a redirect.
 /// </para>
+/// <para>
+/// <b>"Email this invite" (S12)</b> is a checkbox shown only while email is on. Hiding it is not the check:
+/// <see cref="InviteService"/> refuses a forged post with email off, and an emailed invite with no bound
+/// address, before anything is created. The link is still shown once when it has been emailed.
+/// </para>
 /// </summary>
 public sealed class InvitesModel(
     InviteService invites,
     WorkLedgerDbContext db,
     PortalLinks links,
-    AuthOptions auth) : PageModel
+    AuthOptions auth,
+    EmailOptions email) : PageModel
 {
+    public bool EmailEnabled => email.Enabled;
+
     public IReadOnlyList<InviteSummary> Invites { get; private set; } = [];
 
     /// <summary>Email by user id, for the "issued by" and "used by" columns. Ids are what invites store.</summary>
@@ -40,10 +49,16 @@ public sealed class InvitesModel(
 
     public InviteSummary? Created { get; private set; }
 
+    /// <summary>What happened to the emailed copy, when one was asked for.</summary>
+    public string? EmailNote { get; private set; }
+
+    /// <summary>Whether <see cref="EmailNote"/> reports a queued message, rather than a full queue.</summary>
+    public bool EmailQueued { get; private set; }
+
     public Task<IActionResult> OnGetAsync(CancellationToken cancellationToken) => RenderAsync(cancellationToken);
 
     public async Task<IActionResult> OnPostCreateAsync(
-        string? email, int? expiresInDays, string? note, CancellationToken cancellationToken)
+        string? email, int? expiresInDays, string? note, bool sendEmail, CancellationToken cancellationToken)
     {
         if (!ModelState.IsValid)
         {
@@ -54,16 +69,32 @@ public sealed class InvitesModel(
         }
 
         var result = await invites.IssueAsync(
-            PortalSession.UserId(User), email, expiresInDays, note, cancellationToken);
+            PortalSession.UserId(User), email, expiresInDays, note, sendEmail, cancellationToken);
 
         switch (result)
         {
-            case InviteIssue.Issued { Token: var token, Invite: var invite }:
+            case InviteIssue.Issued { Token: var token, Invite: var invite, EmailQueued: var queued }:
                 CreatedLink = links.Invite(token);
                 Created = invite;
+                if (queued is { } wasQueued)
+                {
+                    EmailQueued = wasQueued;
+                    EmailNote = wasQueued
+                        ? $"Queued for delivery to {email!.Trim()}."
+                        : "The mail queue is full, so this invite wasn't emailed; copy the link below instead.";
+                }
+
                 break;
             case InviteIssue.InvalidEmail:
                 Error = "That email address doesn't look right — it needs a single '@' with text on both sides.";
+                break;
+            case InviteIssue.EmailNeedsAddress:
+                Error = "To email an invite, enter the address it's for: an invite that isn't bound to an " +
+                    "address has nobody to send it to. Nothing was created.";
+                break;
+            case InviteIssue.EmailNotConfigured:
+                Error = "Email isn't configured on this server, so the invite wasn't created. Create it " +
+                    "without emailing it and pass the link on yourself.";
                 break;
             default:
                 Error = "Expires in must be at least one day.";

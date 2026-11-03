@@ -1,4 +1,5 @@
 @page
+@inject EmailOptions Email
 @{
     ViewData["Title"] = "Administration";
 }
@@ -14,4 +15,11 @@
         <h2>Invites</h2>
         <p class="muted">Links that let one person create an account, without sharing the server's signup secret.</p>
     </a>
+    @if (Email.Enabled)
+    {
+        <a class="card link-card" href="/portal/admin/email">
+            <h2>Email</h2>
+            <p class="muted">The relay this server sends invites and resets through. Send yourself a test message.</p>
+        </a>
+    }
 </div>

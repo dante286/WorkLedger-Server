@@ -27,6 +27,7 @@ internal static class EmailSetup
             sp.GetRequiredService<IConfiguration>(), sp.GetRequiredService<WebOptions>()));
         services.AddSingleton<EmailOutbox>();
         services.AddSingleton<IEmailSender, SmtpEmailSender>();
+        services.AddScoped<RelayCheck>();
         services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<EmailOptions>().Enabled
             ? ActivatorUtilities.CreateInstance<EmailDeliveryService>(sp)
             : EmailOff.Instance);

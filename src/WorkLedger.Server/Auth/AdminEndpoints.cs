@@ -204,20 +204,27 @@ public static class AdminEndpoints
     /// <see cref="PasswordResetTokenResponse"/>, for the admin to hand over out of band. It does not set a
     /// password; <c>POST /auth/password/reset</c> spends it. <c>404</c> for an unknown id, and <c>409</c>
     /// naming <c>/auth/claim</c> for the credential-less pre-S6 row.
+    /// <para>
+    /// An optional <see cref="PasswordResetIssueRequest"/> body asks for the reset to be emailed too (S12):
+    /// <c>409</c> while email is off, and <c>emailQueued</c> in the response once asked. Without a body the
+    /// route behaves, and answers, exactly as before S12.
+    /// </para>
     /// </summary>
     private static void MapIssuePasswordReset(WebApplication app) =>
         app.MapPost("/admin/users/{userId:int}/password-reset", async (
             int userId,
+            PasswordResetIssueRequest? request,
             ICurrentContext currentContext,
             AdminOperations admin,
             CancellationToken cancellationToken) =>
         {
-            var (outcome, reset) = await admin.IssuePasswordResetAsync(
-                currentContext.UserId, userId, cancellationToken);
+            var (outcome, reset, queued) = await admin.IssuePasswordResetAsync(
+                currentContext.UserId, userId, request?.SendEmail ?? false, cancellationToken);
 
             return outcome switch
             {
-                AdminOutcome.Done => Results.Ok(new PasswordResetTokenResponse(reset!.Token, reset.ExpiresAtUtc)),
+                AdminOutcome.Done => Results.Ok(new PasswordResetTokenResponse(reset!.Token, reset.ExpiresAtUtc, queued)),
+                AdminOutcome.EmailNotConfigured => EmailNotConfigured(),
                 AdminOutcome.NoCredentials => AuthEndpoints.Error(
                     StatusCodes.Status409Conflict,
                     "That account has no credentials yet, so there is nothing to reset. It is the " +
@@ -241,14 +248,22 @@ public static class AdminEndpoints
             CancellationToken cancellationToken) =>
         {
             var result = await invites.IssueAsync(
-                currentContext.UserId, request?.Email, request?.ExpiresInDays, request?.Note, cancellationToken);
+                currentContext.UserId,
+                request?.Email,
+                request?.ExpiresInDays,
+                request?.Note,
+                request?.SendEmail ?? false,
+                cancellationToken);
 
             return result switch
             {
-                InviteIssue.Issued { Token: var token, Invite: var invite } => Results.Json(
-                    new InviteResponse(token, invite), statusCode: StatusCodes.Status201Created),
+                InviteIssue.Issued { Token: var token, Invite: var invite, EmailQueued: var queued } => Results.Json(
+                    new InviteResponse(token, invite, queued), statusCode: StatusCodes.Status201Created),
                 InviteIssue.InvalidEmail => Results.BadRequest(
                     new { error = "Email must contain a single '@' with text on both sides of it." }),
+                InviteIssue.EmailNeedsAddress => Results.BadRequest(
+                    new { error = "SendEmail needs Email: an open invite has no recipient to send it to." }),
+                InviteIssue.EmailNotConfigured => EmailNotConfigured(),
                 _ => Results.BadRequest(new { error = "ExpiresInDays must be greater than zero." }),
             };
         }).RequireAuthorization(TokenRevocation.AdminPolicy);
@@ -275,6 +290,15 @@ public static class AdminEndpoints
             })
         .RequireAuthorization(TokenRevocation.AdminPolicy);
     }
+
+    /// <summary>
+    /// <c>409</c> for <c>sendEmail</c> on a server that sends no email. A conflict with the server's
+    /// configuration rather than a malformed request, and nothing was created.
+    /// </summary>
+    private static IResult EmailNotConfigured() => AuthEndpoints.Error(
+        StatusCodes.Status409Conflict,
+        "Email isn't configured on this server (Email:Enabled is off), so nothing was sent and nothing " +
+        "was created. Leave sendEmail out and pass the token on yourself.");
 
     /// <summary>
     /// The status code for the outcomes every admin route shares. <paramref name="verb"/> fills in the

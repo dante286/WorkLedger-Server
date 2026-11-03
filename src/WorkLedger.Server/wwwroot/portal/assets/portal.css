@@ -76,6 +76,8 @@ h1 { margin-top: 0; font-size: 1.5rem; }
 .muted { color: var(--muted); }
 
 label { display: block; margin: 1rem 0 0.25rem; font-weight: 600; }
+label.checkbox { display: flex; align-items: center; gap: 0.5rem; font-weight: 400; }
+label.checkbox:has(input:disabled) { color: var(--muted); }
 
 input[type="email"],
 input[type="password"],
@@ -199,6 +201,7 @@ form.stacked { max-width: 26rem; }
 table.grid time { white-space: nowrap; }
 
 .hint { margin: 0.25rem 0 0; font-size: 0.875rem; }
+pre.reply { margin: 0.5rem 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.875rem; }
 
 code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.875em; }
 

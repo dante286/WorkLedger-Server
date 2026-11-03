@@ -33,6 +33,24 @@ document.addEventListener("DOMContentLoaded", () => {
     history.replaceState(null, "", window.location.pathname + window.location.search);
   }
 
+  // A checkbox that only means something once another field has a value ("Email this invite" needs an
+  // address). Disabled until then, as a hint; the server refuses the combination anyway.
+  for (const input of document.querySelectorAll("input[data-requires]")) {
+    const field = document.getElementById(input.dataset.requires);
+    if (!field) {
+      continue;
+    }
+
+    const sync = () => {
+      input.disabled = field.value.trim() === "";
+      if (input.disabled) {
+        input.checked = false;
+      }
+    };
+    field.addEventListener("input", sync);
+    sync();
+  }
+
   // Copy buttons for the one-time links. Rendered hidden, so nobody without JavaScript sees a button that
   // does nothing — the link sits in a read-only field they can select themselves.
   for (const button of document.querySelectorAll("button[data-copy]")) {

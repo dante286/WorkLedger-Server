@@ -257,6 +257,8 @@ portable to any relay, and Resend supports it fully.
    `AdminOperations.IssuePasswordResetAsync` (outdated resets are invalidated the same way, the audit line is
    the same, and so is the guard on users without credentials), then queues the admin-issued reset message to
    the target's `Email`. The page shows the link, and whether the message was queued, as in item 8.
+   - *As built in B:* once the message is queued, an `email-password-reset` audit line (ids only) follows
+     the unchanged `issue-password-reset` one, matching item 8's `email-invite`.
    - The expiry is unchanged: `Auth:PasswordResetExpiryHours`. An admin-issued reset keeps its admin-issued
      lifetime whichever way it's delivered.
 10. **`/portal/admin/email`: settings and a test message.** The page shows the resolved settings (host, port,
