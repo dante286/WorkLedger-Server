@@ -180,7 +180,7 @@ public sealed class EmailDeliveryService : BackgroundService
     /// Checked most-specific first, because MailKit's TLS failure is itself an <see cref="IOException"/> and
     /// a certificate that failed validation now will fail it again in two minutes.
     /// </summary>
-    internal static bool IsTransient(Exception exception) => exception switch
+    public static bool IsTransient(Exception exception) => exception switch
     {
         SmtpCommandException command => (int)command.StatusCode is >= 400 and < 500,
         SslHandshakeException or AuthenticationException => false,
