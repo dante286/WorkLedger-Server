@@ -2,6 +2,8 @@ using Microsoft.EntityFrameworkCore;
 using WorkLedger.Contracts.Auth;
 using WorkLedger.Server.Data;
 using WorkLedger.Server.Data.Entities;
+using WorkLedger.Server.Email;
+using WorkLedger.Server.Web;
 
 namespace WorkLedger.Server.Auth;
 
@@ -15,26 +17,61 @@ namespace WorkLedger.Server.Auth;
 /// its SHA-256 is stored (see <see cref="SingleUseToken"/>), so there is nothing and nowhere that can
 /// produce it again — an operator who loses one revokes it and issues another.
 /// </para>
+/// <para>
+/// <b>Emailing an invite (S12) is a convenience on top of that, never a replacement for it</b>: the token is
+/// still returned for the caller to show once, and the emailed copy is a second route to the same person.
+/// The rules for it live here rather than in either caller, so the portal and <c>POST /admin/invites</c>
+/// cannot disagree about them.
+/// </para>
 /// </summary>
-public sealed class InviteService(WorkLedgerDbContext db, AuthOptions auth, ILoggerFactory loggerFactory)
+public sealed class InviteService(
+    WorkLedgerDbContext db,
+    AuthOptions auth,
+    EmailOptions email,
+    EmailOutbox outbox,
+    PortalLinks links,
+    ILoggerFactory loggerFactory)
 {
     /// <summary>
-    /// Mints an invite, optionally bound to <paramref name="email"/>, living <paramref name="expiresInDays"/>
-    /// days (<c>Auth:InviteExpiryDays</c> when null).
+    /// Mints an invite, optionally bound to <paramref name="address"/>, living <paramref name="expiresInDays"/>
+    /// days (<c>Auth:InviteExpiryDays</c> when null), and with <paramref name="sendEmail"/> queues it to that
+    /// address.
+    /// <para>
+    /// <b>Emailing an invite binds it to the address it is sent to</b>, so an emailed invite always has one:
+    /// an open invite has no recipient to send to, and a forwarded copy of an emailed one still cannot be
+    /// redeemed by anybody else. Both email refusals are decided <b>before</b> anything is written, so a
+    /// refused request leaves no invite behind.
+    /// </para>
+    /// <para>
+    /// <b>The email-off check is here, not only in the page that hides the checkbox</b>: with email off
+    /// there is no mail worker and <see cref="EmailOutbox.TryEnqueue"/> throws, and a forged form or a
+    /// script must get a refusal rather than a 500.
+    /// </para>
     /// </summary>
     public async Task<InviteIssue> IssueAsync(
         int actorUserId,
-        string? email,
+        string? address,
         int? expiresInDays,
         string? note,
+        bool sendEmail,
         CancellationToken cancellationToken)
     {
-        email = email?.Trim();
+        address = address?.Trim();
+
+        if (sendEmail && !email.Enabled)
+        {
+            return InviteIssue.EmailNotConfigured.Instance;
+        }
+
+        if (sendEmail && string.IsNullOrEmpty(address))
+        {
+            return InviteIssue.EmailNeedsAddress.Instance;
+        }
 
         // Validated with the same shallow rule registration applies, so an invite cannot be bound to an
         // address registration would then refuse — which would produce an invite that is impossible to
         // redeem, and no error explaining why.
-        if (!string.IsNullOrEmpty(email) && !Credentials.LooksLikeEmail(email))
+        if (!string.IsNullOrEmpty(address) && !Credentials.LooksLikeEmail(address))
         {
             return InviteIssue.InvalidEmail.Instance;
         }
@@ -50,7 +87,7 @@ public sealed class InviteService(WorkLedgerDbContext db, AuthOptions auth, ILog
         var invite = new Invite
         {
             TokenHash = SingleUseToken.Hash(token),
-            NormalizedEmail = string.IsNullOrEmpty(email) ? null : email.ToUpperInvariant(),
+            NormalizedEmail = string.IsNullOrEmpty(address) ? null : address.ToUpperInvariant(),
             CreatedByUserId = actorUserId,
             CreatedAt = now,
             ExpiresAtUtc = now.AddDays(days),
@@ -63,7 +100,21 @@ public sealed class InviteService(WorkLedgerDbContext db, AuthOptions auth, ILog
         // product is a secret, so its log line has to be especially dull.
         AdminOperations.AuditInvite(loggerFactory, actorUserId, "create-invite", invite.Id);
 
-        return new InviteIssue.Issued(token, Summarize(invite));
+        if (!sendEmail)
+        {
+            return new InviteIssue.Issued(token, Summarize(invite));
+        }
+
+        // Sent to the address as typed; the row keeps only its normalized form, for matching. A full
+        // queue is not a failure of the invite, which exists either way: the caller still shows the link.
+        var queued = outbox.TryEnqueue(new OutgoingEmail(
+            EmailKind.Invite, null, address!, EmailMessages.Invite(links, token, invite.ExpiresAtUtc)));
+        if (queued)
+        {
+            AdminOperations.AuditInvite(loggerFactory, actorUserId, "email-invite", invite.Id);
+        }
+
+        return new InviteIssue.Issued(token, Summarize(invite), queued);
     }
 
     /// <summary>Every invite, metadata only — the token is not recoverable. Newest first: an operator
@@ -158,8 +209,11 @@ public sealed class InviteService(WorkLedgerDbContext db, AuthOptions auth, ILog
 /// <summary>What <see cref="InviteService.IssueAsync"/> did.</summary>
 public abstract record InviteIssue
 {
-    /// <summary>Minted. <see cref="Token"/> is the only copy there will ever be.</summary>
-    public sealed record Issued(string Token, InviteSummary Invite) : InviteIssue;
+    /// <summary>
+    /// Minted. <see cref="Token"/> is the only copy there will ever be. <see cref="EmailQueued"/> is null when
+    /// no email was asked for, and false when it was but the mail queue was full.
+    /// </summary>
+    public sealed record Issued(string Token, InviteSummary Invite, bool? EmailQueued = null) : InviteIssue;
 
     /// <summary>The bound address fails registration's email rule, so the invite could never be redeemed.</summary>
     public sealed record InvalidEmail : InviteIssue
@@ -171,6 +225,18 @@ public abstract record InviteIssue
     public sealed record InvalidExpiry : InviteIssue
     {
         public static readonly InvalidExpiry Instance = new();
+    }
+
+    /// <summary>Email was asked for, but <c>Email:Enabled</c> is off. Nothing was created.</summary>
+    public sealed record EmailNotConfigured : InviteIssue
+    {
+        public static readonly EmailNotConfigured Instance = new();
+    }
+
+    /// <summary>Email was asked for an open invite, which has no recipient. Nothing was created.</summary>
+    public sealed record EmailNeedsAddress : InviteIssue
+    {
+        public static readonly EmailNeedsAddress Instance = new();
     }
 }
 

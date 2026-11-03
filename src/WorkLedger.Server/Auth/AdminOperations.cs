@@ -2,6 +2,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using WorkLedger.Contracts.Auth;
 using WorkLedger.Server.Data;
+using WorkLedger.Server.Email;
+using WorkLedger.Server.Web;
 
 namespace WorkLedger.Server.Auth;
 
@@ -37,7 +39,10 @@ public sealed class AdminOperations(
     IMemoryCache cache,
     ILoggerFactory loggerFactory,
     AccountDeletion accountDeletion,
-    PasswordResetService passwordResets)
+    PasswordResetService passwordResets,
+    EmailOptions email,
+    EmailOutbox outbox,
+    PortalLinks links)
 {
     /// <summary>
     /// Promotes <paramref name="actorUserId"/> to admin, and only while this deployment has no admin at
@@ -388,25 +393,56 @@ public sealed class AdminOperations(
     /// reasonable order to do things in, and the token is worth nothing on its own while
     /// <c>DisabledAtUtc</c> is set — redeeming it changes the password and no more.
     /// </para>
+    /// <para>
+    /// <b><paramref name="sendEmail"/> (S12) also queues the admin-issued reset message</b> to the target's
+    /// address. Everything else is unchanged: the same invalidation of earlier resets, the same
+    /// <c>Auth:PasswordResetExpiryHours</c> lifetime whichever way it is delivered, the same audit line (plus
+    /// an <c>email-password-reset</c> one, ids only, once queued), and the token still comes back for the
+    /// caller to show — the emailed copy is a convenience, not the only one. With email off this is
+    /// <see cref="AdminOutcome.EmailNotConfigured"/>, decided before anything is issued: there is no mail
+    /// worker then, and a forged request must not leave a reset behind.
+    /// </para>
+    /// <para>
+    /// <c>EmailQueued</c> is null when no email was asked for, and false when the mail queue was full.
+    /// </para>
     /// </summary>
-    public async Task<(AdminOutcome Outcome, IssuedPasswordReset? Reset)> IssuePasswordResetAsync(
-        int actorUserId, int userId, CancellationToken cancellationToken)
+    public async Task<(AdminOutcome Outcome, IssuedPasswordReset? Reset, bool? EmailQueued)> IssuePasswordResetAsync(
+        int actorUserId, int userId, bool sendEmail, CancellationToken cancellationToken)
     {
+        if (sendEmail && !email.Enabled)
+        {
+            return (AdminOutcome.EmailNotConfigured, null, null);
+        }
+
         var user = await db.Users.SingleOrDefaultAsync(u => u.Id == userId, cancellationToken);
         if (user is null)
         {
-            return (AdminOutcome.NoSuchUser, null);
+            return (AdminOutcome.NoSuchUser, null, null);
         }
 
-        if (user.PasswordHash is null)
+        // A claimed row's Email and PasswordHash are written together and never null again (see User).
+        if (user.PasswordHash is null || user.Email is null)
         {
-            return (AdminOutcome.NoCredentials, null);
+            return (AdminOutcome.NoCredentials, null, null);
         }
 
         var reset = await passwordResets.IssueAsync(userId, actorUserId, cancellationToken);
 
         Audit(loggerFactory, actorUserId, "issue-password-reset", userId);
-        return (AdminOutcome.Done, reset);
+        if (!sendEmail)
+        {
+            return (AdminOutcome.Done, reset, null);
+        }
+
+        var queued = outbox.TryEnqueue(new OutgoingEmail(
+            EmailKind.AdminPasswordReset, userId, user.Email,
+            EmailMessages.AdminPasswordReset(links, reset.Token, reset.ExpiresAtUtc)));
+        if (queued)
+        {
+            Audit(loggerFactory, actorUserId, "email-password-reset", userId);
+        }
+
+        return (AdminOutcome.Done, reset, queued);
     }
 
     /// <summary>
@@ -501,4 +537,7 @@ public enum AdminOutcome
 
     /// <summary>Bootstrap only: the deployment already has an admin, so the door is shut.</summary>
     AdminAlreadyExists,
+
+    /// <summary>Email was asked for, but <c>Email:Enabled</c> is off. Nothing was done.</summary>
+    EmailNotConfigured,
 }

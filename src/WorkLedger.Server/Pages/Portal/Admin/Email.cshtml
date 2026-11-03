@@ -1,0 +1,69 @@
+@page
+@model WorkLedger.Server.Pages.Portal.Admin.EmailModel
+@{
+    ViewData["Title"] = "Email";
+    var options = Model.Options;
+}
+<partial name="_AdminNav" />
+
+<h1>Email</h1>
+<p class="muted">
+    How this server sends invites and password resets. These settings come from the server's
+    environment (<code>Email__*</code>); change them there and restart. Starting the server never
+    contacts the relay, so send yourself a test message to check it works.
+</p>
+
+@if (Model.Result is { } result)
+{
+    @if (result.Delivered)
+    {
+        <p class="notice" role="status">
+            Delivered to the relay for @result.To. If it doesn't arrive, check your spam folder, then the
+            relay's own logs: from here on, delivery is up to the relay.
+        </p>
+    }
+    else
+    {
+        <div class="alert" role="alert">
+            <p><strong>The test message to @result.To failed.</strong></p>
+            @if (result.StatusCode is { } status)
+            {
+                <p>SMTP status @status. The relay said:</p>
+            }
+            <pre class="reply">@result.Reply</pre>
+        </div>
+    }
+}
+
+<section class="card">
+    <h2>Settings</h2>
+    <dl class="facts">
+        <dt>Relay</dt>
+        <dd>@options.SmtpHost:@options.SmtpPort</dd>
+        <dt>Security</dt>
+        <dd>
+            @options.SmtpSecurity
+            @if (options.SmtpSecurity == EmailSecurity.None)
+            {
+                <span class="badge warn">Unencrypted</span>
+            }
+        </dd>
+        <dt>Sign-in</dt>
+        <dd>@(options.SmtpUsername is null ? "None (the relay doesn't ask for one)" : $"As {options.SmtpUsername}, with a password")</dd>
+        <dt>From</dt>
+        <dd>@options.FromName &lt;@options.FromAddress&gt;</dd>
+        <dt>Queue</dt>
+        <dd>Up to @options.QueueCapacity messages waiting, kept in memory only</dd>
+    </dl>
+</section>
+
+<section class="card">
+    <h2>Send a test message</h2>
+    <p>
+        Sends a short message to your own address, straight to the relay, and waits up to 30 seconds for
+        its answer. Nothing else is sent.
+    </p>
+    <form method="post" asp-page-handler="Test">
+        <button type="submit" class="primary">Send a test message to me</button>
+    </form>
+</section>

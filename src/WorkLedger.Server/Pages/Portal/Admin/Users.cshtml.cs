@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using WorkLedger.Contracts.Auth;
 using WorkLedger.Server.Auth;
 using WorkLedger.Server.Data;
+using WorkLedger.Server.Email;
 using WorkLedger.Server.Web;
 
 namespace WorkLedger.Server.Pages.Portal.Admin;
@@ -26,13 +27,21 @@ namespace WorkLedger.Server.Pages.Portal.Admin;
 /// <b>Demoting yourself is allowed</b> (S10), and then this page sends you to your account instead of
 /// re-rendering: the admin pages refuse your very next request, which is the policy working.
 /// </para>
+/// <para>
+/// <b>"Issue reset and email it" (S12)</b> is the same <see cref="AdminOperations.IssuePasswordResetAsync"/>
+/// with email asked for, shown only while email is on; the operation itself refuses it while email is off,
+/// before issuing anything. The link is still shown once when it has been emailed.
+/// </para>
 /// </summary>
 public sealed class UsersModel(
     AdminOperations admin,
     WorkLedgerDbContext db,
     PortalLinks links,
-    AuthOptions auth) : PageModel
+    AuthOptions auth,
+    EmailOptions email) : PageModel
 {
+    public bool EmailEnabled => email.Enabled;
+
     public IReadOnlyList<AdminUserSummary> Users { get; private set; } = [];
 
     public int CurrentUserId { get; private set; }
@@ -51,6 +60,9 @@ public sealed class UsersModel(
     public DateTime ResetExpiresAtUtc { get; private set; }
 
     public int ResetExpiryHours => auth.PasswordResetExpiryHours;
+
+    /// <summary>Null when the reset was not emailed; otherwise whether the message was queued.</summary>
+    public bool? ResetEmailQueued { get; private set; }
 
     public Task<IActionResult> OnGetAsync(CancellationToken cancellationToken) => RenderAsync(cancellationToken);
 
@@ -92,17 +104,24 @@ public sealed class UsersModel(
         ActAsync(userId, "delete", (actor, ct) => admin.DeleteUserAsync(actor, userId, confirmEmail ?? string.Empty, ct),
             email => $"Deleted {email} and all of their synced data. This cannot be undone.", cancellationToken);
 
-    public async Task<IActionResult> OnPostResetAsync(int userId, CancellationToken cancellationToken)
+    public Task<IActionResult> OnPostResetAsync(int userId, CancellationToken cancellationToken) =>
+        IssueResetAsync(userId, sendEmail: false, cancellationToken);
+
+    public Task<IActionResult> OnPostResetAndEmailAsync(int userId, CancellationToken cancellationToken) =>
+        IssueResetAsync(userId, sendEmail: true, cancellationToken);
+
+    private async Task<IActionResult> IssueResetAsync(int userId, bool sendEmail, CancellationToken cancellationToken)
     {
         var email = await EmailOfAsync(userId, cancellationToken);
-        var (outcome, reset) = await admin.IssuePasswordResetAsync(
-            PortalSession.UserId(User), userId, cancellationToken);
+        var (outcome, reset, queued) = await admin.IssuePasswordResetAsync(
+            PortalSession.UserId(User), userId, sendEmail, cancellationToken);
 
         if (outcome is AdminOutcome.Done)
         {
             ResetLink = links.PasswordReset(reset!.Token);
             ResetFor = email;
             ResetExpiresAtUtc = reset.ExpiresAtUtc;
+            ResetEmailQueued = queued;
         }
         else
         {
@@ -167,6 +186,9 @@ public sealed class UsersModel(
         AdminOutcome.NoCredentials =>
             "That account has no credentials yet, so there is nothing to reset. It is the account from " +
             "before user accounts existed, and it has to be claimed first.",
+        AdminOutcome.EmailNotConfigured =>
+            "Email isn't configured on this server, so no reset was issued. Use the password reset link " +
+            "button and pass the link on yourself.",
         _ => "That action could not be completed.",
     };
 

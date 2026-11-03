@@ -11,7 +11,14 @@
 <h1>Invites</h1>
 <p class="muted">
     An invite lets one person create an account on this server without knowing its signup secret.
-    No email is sent — you pass the link on yourself.
+    @if (Model.EmailEnabled)
+    {
+        <text>Bind it to an address to have the server email it, or copy the link and pass it on yourself.</text>
+    }
+    else
+    {
+        <text>No email is sent — you pass the link on yourself.</text>
+    }
 </p>
 
 @if (Model.Message is not null)
@@ -27,6 +34,10 @@
 {
     <section class="card secret" aria-labelledby="invite-heading">
         <h2 id="invite-heading">Invite link@(Model.Created?.Email is { } bound ? $" for {bound.ToLowerInvariant()}" : "")</h2>
+        @if (Model.EmailNote is not null)
+        {
+            <p class="@(Model.EmailQueued ? "notice" : "alert")" role="status">@Model.EmailNote</p>
+        }
         <p>
             <strong>This link is shown once.</strong> Only a fingerprint of it is stored, so it cannot be
             shown again — copy it now. If it goes astray, revoke it below and create another.
@@ -46,6 +57,14 @@
     <form method="post" asp-page-handler="Create" class="stacked">
         <label for="invite-email">Only for this email <span class="muted">(optional)</span></label>
         <input id="invite-email" name="email" type="email" autocomplete="off">
+        @if (Model.EmailEnabled)
+        {
+            <label class="checkbox">
+                <input type="checkbox" name="sendEmail" value="true" data-requires="invite-email">
+                Email this invite to that address
+            </label>
+            <p class="hint muted">Emailing it binds it to that address, so nobody else can use it.</p>
+        }
         <label for="invite-days">Expires in (days)</label>
         <input id="invite-days" name="expiresInDays" type="number" min="1" value="@Model.DefaultExpiryDays">
         <label for="invite-note">Note to yourself <span class="muted">(optional)</span></label>
