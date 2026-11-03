@@ -340,8 +340,8 @@ portable to any relay, and Resend supports it fully.
 17. **"Your WorkLedger password was changed."** Sent after commit by the services that change a password:
     `AccountSelfService` (change password) and `PasswordResetService.RedeemAsync`. It's sent whichever caller
     reached the service, which **includes the JSON compatibility route `POST /auth/password`**.
-    - **This is deliberately a decision about where the rule lives, and it needs sign-off (see the end of this
-      plan).** S11 says no new behaviour lands on compatibility routes. `CLAUDE.md` says to add a rule to the
+    - **This is deliberately a decision about where the rule lives, and it needed sign-off (see the end of this
+      plan). Signed off 2026-11-03: the notice fires on the JSON route too.** S11 says no new behaviour lands on compatibility routes. `CLAUDE.md` says to add a rule to the
       service and never to one of its callers.
     - The notice changes nothing on the wire: same status, same body. A password change made through the JSON
       route by someone who stole a device token is exactly the takeover this notice exists to catch.
@@ -525,7 +525,8 @@ These are the choices a reviewer is most likely to want made differently. Each o
 something forced by the code:
 
 1. **Item 17 notifies on the JSON compatibility route too.** The alternative is a caller flag on the service,
-   which `CLAUDE.md`'s service-layer rule argues against.
+   which `CLAUDE.md`'s service-layer rule argues against. **Decided 2026-11-03 (WL-213): yes, as
+   recommended.** Built in D as `Email/SecurityNotices`, called by both services with no caller flag.
 2. **Decision 5, showing the link even when it is emailed.** The stricter alternative shows nothing and relies
    on email entirely. That takes away the fallback, and it doesn't remove the admin's ability to issue a reset
    and use it themselves.

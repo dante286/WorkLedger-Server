@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using WorkLedger.Server.Data;
 using WorkLedger.Server.Data.Entities;
+using WorkLedger.Server.Email;
 
 namespace WorkLedger.Server.Auth;
 
@@ -23,7 +24,8 @@ public sealed class PasswordResetService(
     WorkLedgerDbContext db,
     AuthOptions auth,
     PasswordService passwords,
-    IMemoryCache cache)
+    IMemoryCache cache,
+    SecurityNotices notices)
 {
     /// <summary>
     /// The one sentence for every way a token can fail — unknown, expired or already spent — shown by
@@ -107,6 +109,10 @@ public sealed class PasswordResetService(
     /// <b>It does not un-suspend anybody.</b> Setting a credential and restoring access are different
     /// decisions, and only an admin makes the second one.
     /// </para>
+    /// <para>
+    /// <b>It sends the password-changed notice (S12) after the commit</b>, from the portal's
+    /// <c>/portal/reset</c> and <c>POST /auth/password/reset</c> alike — see <see cref="SecurityNotices"/>.
+    /// </para>
     /// </summary>
     public async Task<PasswordResetRedemption> RedeemAsync(
         string? token, string? newPassword, CancellationToken cancellationToken)
@@ -153,6 +159,7 @@ public sealed class PasswordResetService(
         // After the commit, never before: evicting first would only let a request already in flight
         // re-cache the stamp this call just replaced.
         await TokenRevocation.EvictUserAsync(db, cache, user.Id, cancellationToken);
+        notices.PasswordChanged(user, now);
 
         return PasswordResetRedemption.Redeemed.Instance;
     }
