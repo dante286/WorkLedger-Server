@@ -1,5 +1,9 @@
 # Plan S12: Email delivery for invites, resets and self-service password recovery
 
+> **Status: shipped** (2026-11-03), as five PRs in plan order: A #26, B #27, C #28, D #29, E (this plan's
+> last group). *As built* notes below record where the code differs from the text. Built alongside it:
+> WL-231 (PR #30, portal secrets as Trace-logged handler arguments) and WL-232 (NU1903, fixed in E).
+
 **Tickets:** epic **WL-209** (*Email delivery: emailed invites and resets, self-service password recovery
 (server)*). It has one `Task` per scope group and `Subtask`s per item, labelled `server` + `auth` + `email`,
 plus `web` on the tickets that change portal pages. `Blocks` links between the tasks encode the build order,

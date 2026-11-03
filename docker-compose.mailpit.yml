@@ -1,0 +1,33 @@
+# Smoke-test override, never a deployment file: adds a Mailpit catch-all relay and points the API's
+# email at it, so `pwsh ./scripts/smoke-test.ps1 -Up -WithMailpit` can check MailKit inside the real
+# Alpine image (invariant globalization, the image's CA bundle) end to end.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.mailpit.yml up -d --build
+#
+# Mailpit accepts everything and delivers nothing, so the security here is None: it is on the compose
+# network, the one case EmailOptions allows that for, and no SMTP credentials are configured. The
+# portal has to be on too, because every emailed link goes to it.
+
+services:
+  mailpit:
+    # Pinned, as the test suite's MailpitFixture is.
+    image: axllent/mailpit:v1.33.0
+    restart: "no"
+    ports:
+      # Its web UI and HTTP API, on loopback only; the smoke test reads messages back through it.
+      - "127.0.0.1:${MAILPIT_PORT:-18025}:8025"
+
+  api:
+    depends_on:
+      mailpit:
+        condition: service_started
+    environment:
+      Web__Enabled: "true"
+      Web__PublicBaseUrl: ${Web__PublicBaseUrl:-http://localhost:${API_PORT:-8080}}
+      Email__Enabled: "true"
+      Email__SmtpHost: mailpit
+      Email__SmtpPort: "1025"
+      Email__SmtpSecurity: None
+      Email__SmtpUsername: ""
+      Email__SmtpPassword: ""
+      Email__FromAddress: no-reply@smoke.invalid

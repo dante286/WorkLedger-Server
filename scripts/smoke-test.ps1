@@ -41,11 +41,21 @@
     leave the account and its rows in place -- useful when you want to poke at the deployment
     afterwards, and it prints the credentials so you can sign in.
 
+    With -WithMailpit it also checks outbound email inside the real image (S12): it brings the stack up
+    with docker-compose.mailpit.yml layered on, which adds a Mailpit catch-all relay and turns Email
+    on against it, checks the image has a CA bundle, emails a password reset through /admin/* and reads
+    it back from Mailpit, then does the same for an account whose address has a NON-ASCII domain. That
+    last one is the check the test suite cannot make: MimeKit encodes such a domain with IdnMapping,
+    and the image runs invariant globalization. Either outcome is acceptable as long as the request
+    never 500s -- the message arrives, or the worker drops it with its one log line -- and the step says
+    which happened. The mail leg needs to administer the target, like the invite leg, and adds one
+    more redeemed Invites row per run (the IDN account registers through an invite).
+
     Registration must be open on the target (Auth__RegistrationEnabled / REGISTRATIONS_ALLOWED), and
     the run spends POSTs against the per-IP credential rate limit (Auth__LoginRateLimitPerMinute, 10
     by default): nine when the multi-user leg runs, six when it is skipped, one fewer of each with
-    -KeepAccount. One run fits the default with a request to spare; two inside one minute can trip a
-    429.
+    -KeepAccount, and one more with -WithMailpit. One run fits the default (exactly, with
+    -WithMailpit); two inside one minute can trip a 429.
     Auth__SignupSecretEnabled may be either way round: the first account registers with the secret if
     that is accepted and otherwise cannot be created at all, which the script says plainly.
 
@@ -66,6 +76,14 @@
 .PARAMETER Down
     Run `docker compose down` at the end. The volume, and therefore the data, survives.
 
+.PARAMETER WithMailpit
+    Layer docker-compose.mailpit.yml on (for -Up and -Down too) and run the email leg described above.
+
+.PARAMETER MailpitUrl
+    Where Mailpit's HTTP API is, for -WithMailpit. Defaults to http://localhost:<MAILPIT_PORT from .env,
+    else 18025>; pass http://mailpit:8025 when running this script from a container on the compose
+    network.
+
 .EXAMPLE
     pwsh ./scripts/smoke-test.ps1 -Up
 
@@ -74,6 +92,9 @@
 
 .EXAMPLE
     pwsh ./scripts/smoke-test.ps1 -KeepAccount
+
+.EXAMPLE
+    pwsh ./scripts/smoke-test.ps1 -Up -WithMailpit -Down
 #>
 [CmdletBinding()]
 param(
@@ -81,7 +102,9 @@ param(
     [string]$BootstrapSecret,
     [switch]$KeepAccount,
     [switch]$Up,
-    [switch]$Down
+    [switch]$Down,
+    [switch]$WithMailpit,
+    [string]$MailpitUrl
 )
 
 Set-StrictMode -Version Latest
@@ -89,6 +112,9 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $composeFile = Join-Path $repoRoot 'docker-compose.yml'
+# Every docker compose call goes through these, so -WithMailpit layers its override on consistently.
+$composeArgs = @('--file', $composeFile)
+if ($WithMailpit) { $composeArgs += @('--file', (Join-Path $repoRoot 'docker-compose.mailpit.yml')) }
 
 function Read-DotEnv {
     param([string]$Path)
@@ -203,8 +229,8 @@ function Utc {
 }
 
 if ($Up) {
-    Start-Step 'docker compose up --detach --build'
-    docker compose --file $composeFile up --detach --build
+    Start-Step "docker compose up --detach --build$(if ($WithMailpit) { ' (with Mailpit)' })"
+    docker compose @composeArgs up --detach --build
     if ($LASTEXITCODE -ne 0) { throw 'docker compose up failed.' }
 }
 
@@ -216,6 +242,8 @@ $email = $null
 $secondEmail = $null
 $secondUserId = 0
 $ranInviteLeg = $false
+$idnEmail = $null
+$idnUserId = 0
 
 try {
     # --- the deployment is serving ---------------------------------------------------------------
@@ -572,6 +600,72 @@ try {
             (($invitee.Count -eq 1) -and ($invitee[0].deviceCount -eq 1) -and (-not $invitee[0].isAdmin)) $users.Text
     }
 
+    # --- outbound email inside the image (S12), with -WithMailpit ------------------------------------
+    if ($WithMailpit) {
+        if (-not $canAdminister) {
+            throw '-WithMailpit needs to administer the target (it emails resets through /admin/*), and this deployment already has an administrator.'
+        }
+
+        $mailpit = if ($MailpitUrl) { $MailpitUrl.TrimEnd('/') } else {
+            $mailpitPort = if ($dotEnv.ContainsKey('MAILPIT_PORT')) { $dotEnv['MAILPIT_PORT'] } else { '18025' }
+            "http://localhost:$mailpitPort"
+        }
+
+        # Waits up to 30s for a message to $To in Mailpit, and returns it (or $null).
+        function Wait-Mail {
+            param([string]$To)
+            $deadline = (Get-Date).AddSeconds(30)
+            while ((Get-Date) -lt $deadline) {
+                $list = Invoke-RestMethod -Uri "$mailpit/api/v1/messages" -TimeoutSec 10
+                $hit = @($list.messages | Where-Object { @($_.To | Where-Object { $_.Address -eq $To }).Count -gt 0 })
+                if ($hit.Count -gt 0) { return Invoke-RestMethod -Uri "$mailpit/api/v1/message/$($hit[0].ID)" -TimeoutSec 10 }
+                Start-Sleep -Seconds 1
+            }
+            return $null
+        }
+
+        Start-Step 'the image carries a CA bundle (STARTTLS to a public relay needs one)'
+        docker compose @composeArgs exec -T api sh -c 'test -s /etc/ssl/certs/ca-certificates.crt'
+        Confirm-That '/etc/ssl/certs/ca-certificates.crt exists and is not empty' ($LASTEXITCODE -eq 0)
+
+        Start-Step 'an emailed password reset arrives (MailKit inside the image)'
+        $emailedReset = Invoke-Api -Method POST -Path "/admin/users/$userId/password-reset" -Token $tokens[$deviceA] -Body @{ SendEmail = $true }
+        Confirm-That 'POST /admin/users/{id}/password-reset with sendEmail returns 200 and emailQueued' `
+            (($emailedReset.Status -eq 200) -and ($emailedReset.Body.emailQueued -eq $true)) "status $($emailedReset.Status): $($emailedReset.Text)"
+        $received = Wait-Mail -To $email
+        Confirm-That 'Mailpit received it' ($null -ne $received) "nothing for $email at $mailpit within 30s -- check: docker compose logs api"
+        Confirm-That 'it is the reset, carrying its link and the same token on its own line' `
+            (($received.Subject -eq 'Reset your WorkLedger password') -and ($received.Text -match [regex]::Escape("#token=$($emailedReset.Body.token)")) -and ($received.Text -match "(?m)^$([regex]::Escape($emailedReset.Body.token))\r?$")) $received.Subject
+
+        Start-Step 'a recipient on a non-ASCII domain (IdnMapping under invariant globalization)'
+        $idnEmail = "smoke-idn+$stamp@bücher.invalid"
+        $idnInvite = Invoke-Api -Method POST -Path '/admin/invites' -Token $tokens[$deviceA] -Body @{ Email = $idnEmail; Note = "smoke IDN $stamp" }
+        Confirm-That 'an invite bound to it is accepted' ($idnInvite.Status -eq 201) "status $($idnInvite.Status): $($idnInvite.Text)"
+        $idnRegistered = Invoke-Api -Method POST -Path '/auth/register' -Body @{
+            Email = $idnEmail; Password = $password; InviteToken = [string]$idnInvite.Body.token
+        }
+        Confirm-That 'and it registers' ($idnRegistered.Status -eq 201) "status $($idnRegistered.Status): $($idnRegistered.Text)"
+        $idnUserId = [int]$idnRegistered.Body.id
+
+        $idnReset = Invoke-Api -Method POST -Path "/admin/users/$idnUserId/password-reset" -Token $tokens[$deviceA] -Body @{ SendEmail = $true }
+        Confirm-That 'emailing it a reset is never a 500' ($idnReset.Status -eq 200) "status $($idnReset.Status): $($idnReset.Text)"
+        $idnReceived = Wait-Mail -To $idnEmail
+        if (-not $idnReceived) { $idnReceived = Wait-Mail -To "smoke-idn+$stamp@xn--bcher-kva.invalid" }
+        if ($idnReceived) {
+            Write-Host "      delivered: MimeKit handles a non-ASCII domain under invariant globalization (To: $($idnReceived.To[0].Address))" -ForegroundColor DarkGray
+        }
+        else {
+            $dropped = (docker compose @composeArgs logs api 2>&1 | Select-String -SimpleMatch "Dropped AdminPasswordReset email for user $idnUserId").Count -gt 0
+            Confirm-That 'or, if it could not be delivered, the worker dropped it with its one log line' $dropped `
+                "neither delivered nor logged as dropped -- check: docker compose logs api"
+            Write-Host "      NOT delivered: a non-ASCII domain cannot be sent from this image; it fails as 'could not deliver', not a 500" -ForegroundColor Yellow
+        }
+
+        $idnDeleted = Invoke-Api -Method DELETE -Path "/admin/users/$idnUserId" -Token $tokens[$deviceA] -Body @{ ConfirmEmail = $idnEmail }
+        Confirm-That 'the IDN account is deleted again' ($idnDeleted.Status -eq 204) "status $($idnDeleted.Status): $($idnDeleted.Text)"
+        $idnEmail = $null
+    }
+
     # --- clean up after ourselves ----------------------------------------------------------------
     if ($KeepAccount) {
         Start-Step 'skipping DELETE /auth/account (-KeepAccount)'
@@ -635,7 +729,8 @@ try {
     if (-not $KeepAccount) {
         Write-Host "      both accounts it created are deleted" -ForegroundColor DarkGray
         if ($ranInviteLeg) {
-            Write-Host "      one redeemed row stays in Invites, with null user ids -- by design; see the header" -ForegroundColor DarkGray
+            $left = if ($WithMailpit) { 'two redeemed rows stay' } else { 'one redeemed row stays' }
+            Write-Host "      $left in Invites, with null user ids -- by design; see the header" -ForegroundColor DarkGray
         }
     }
 } catch {
@@ -647,11 +742,14 @@ try {
     if ($secondEmail) {
         Write-Host "      so may the invited account $secondEmail -- DELETE /admin/users/$secondUserId, or drop the volume" -ForegroundColor DarkGray
     }
+    if ($idnEmail -and $idnUserId) {
+        Write-Host "      and the IDN account $idnEmail -- DELETE /admin/users/$idnUserId, or drop the volume" -ForegroundColor DarkGray
+    }
     $exitCode = 1
 } finally {
     if ($Down) {
         Start-Step 'docker compose down'
-        docker compose --file $composeFile down
+        docker compose @composeArgs down
     }
 }
 

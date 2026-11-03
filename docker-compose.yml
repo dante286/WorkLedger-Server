@@ -82,6 +82,7 @@ services:
       SIGNUP_SECRET_ENABLED: ${SIGNUP_SECRET_ENABLED:-}
       Auth__InviteExpiryDays: ${Auth__InviteExpiryDays:-}
       Auth__PasswordResetExpiryHours: ${Auth__PasswordResetExpiryHours:-}
+      Auth__SelfServiceResetExpiryMinutes: ${Auth__SelfServiceResetExpiryMinutes:-}
       Auth__MinPasswordLength: ${Auth__MinPasswordLength:-}
       Auth__MaxFailedLogins: ${Auth__MaxFailedLogins:-}
       Auth__LockoutMinutes: ${Auth__LockoutMinutes:-}
@@ -96,6 +97,22 @@ services:
       Web__Enabled: ${Web__Enabled:-}
       Web__PublicBaseUrl: ${Web__PublicBaseUrl:-}
       Web__SessionHours: ${Web__SessionHours:-}
+      # Outbound email (S12). Off unless .env sets Email__Enabled=true, which also needs the portal on
+      # (every emailed link goes to a portal page) and then Email__SmtpHost and Email__FromAddress; the
+      # API refuses to start naming whichever is missing. With it off, no other Email__ key is read.
+      # Every key is listed here, blank, because a key missing from this block never reaches the
+      # container however .env sets it -- S11 found four S10 keys lost exactly that way. The password
+      # is a secret but optional (some relays authenticate by IP), so it gets no `:?` either.
+      Email__Enabled: ${Email__Enabled:-}
+      Email__SmtpHost: ${Email__SmtpHost:-}
+      Email__SmtpPort: ${Email__SmtpPort:-}
+      Email__SmtpSecurity: ${Email__SmtpSecurity:-}
+      Email__SmtpUsername: ${Email__SmtpUsername:-}
+      Email__SmtpPassword: ${Email__SmtpPassword:-}
+      Email__FromAddress: ${Email__FromAddress:-}
+      Email__FromName: ${Email__FromName:-}
+      Email__QueueCapacity: ${Email__QueueCapacity:-}
+      Email__ResetCooldownMinutes: ${Email__ResetCooldownMinutes:-}
     ports:
       # Host-side port only. Bind to 127.0.0.1 (API_BIND=127.0.0.1) when a reverse proxy on the same
       # host terminates TLS — see "Putting it behind TLS" in README.md.

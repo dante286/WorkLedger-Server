@@ -9,7 +9,7 @@
 
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="6.0.4" />
-    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.10" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.14" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <!-- 4.14.0 or newer: 4.13.0 pulled SSH.NET 2025.1.0 transitively, which NU1903 flags for
          CVE-2026-48798 (GHSA-q939-rpr3-3284, patched in SSH.NET 2026.0.0). 4.14.0 depends on the

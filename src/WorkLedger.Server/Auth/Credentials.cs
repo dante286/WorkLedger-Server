@@ -9,8 +9,10 @@ namespace WorkLedger.Server.Auth;
 /// <b>Email validation is deliberately shallow</b>: non-empty, and one <c>@</c> with a non-empty local
 /// part and a non-empty domain part. It is not an RFC-5322 regex attempt, because those either reject
 /// addresses that genuinely work or accept ones that do not, and the only authority on whether an
-/// address is real is a message arriving at it. There is no SMTP here to send one (email verification is
-/// deferred), so a shallow syntactic check is the honest limit of what this server can know.
+/// address is real is a message arriving at it. Since S12 the server can send one, but it still never
+/// verifies an address (email verification at registration is out of scope), so a shallow syntactic check
+/// is the honest limit of what it knows. The same rule is what <c>EmailOptions</c> applies to the from
+/// address, and it accepts a non-ASCII domain, which MailKit sends (the smoke test checks it in the image).
 /// </para>
 /// <para>
 /// <b>Password rules are length-only, and that is the point.</b> Per NIST 800-63B, length is the control
