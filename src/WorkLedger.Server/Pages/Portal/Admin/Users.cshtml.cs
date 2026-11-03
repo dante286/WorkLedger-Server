@@ -64,6 +64,13 @@ public sealed class UsersModel(
     /// <summary>Null when the reset was not emailed; otherwise whether the message was queued.</summary>
     public bool? ResetEmailQueued { get; private set; }
 
+    /// <summary>
+    /// The target's email typed out to confirm a delete. A bound property rather than a handler argument,
+    /// because MVC's Trace-level "executing handler … with arguments" line would otherwise print it.
+    /// </summary>
+    [BindProperty]
+    public string? ConfirmEmail { get; set; }
+
     public Task<IActionResult> OnGetAsync(CancellationToken cancellationToken) => RenderAsync(cancellationToken);
 
     public Task<IActionResult> OnPostUnlockAsync(int userId, CancellationToken cancellationToken) =>
@@ -99,9 +106,9 @@ public sealed class UsersModel(
         return await ShowAsync(outcome, "demote", email, $"{email} is no longer an administrator.", cancellationToken);
     }
 
-    public Task<IActionResult> OnPostDeleteAsync(int userId, string? confirmEmail, CancellationToken cancellationToken) =>
+    public Task<IActionResult> OnPostDeleteAsync(int userId, CancellationToken cancellationToken) =>
         // Never null from the form: a blank field is a confirmation that matches nothing, not a missing one.
-        ActAsync(userId, "delete", (actor, ct) => admin.DeleteUserAsync(actor, userId, confirmEmail ?? string.Empty, ct),
+        ActAsync(userId, "delete", (actor, ct) => admin.DeleteUserAsync(actor, userId, ConfirmEmail ?? string.Empty, ct),
             email => $"Deleted {email} and all of their synced data. This cannot be undone.", cancellationToken);
 
     public Task<IActionResult> OnPostResetAsync(int userId, CancellationToken cancellationToken) =>

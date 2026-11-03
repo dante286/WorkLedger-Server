@@ -31,11 +31,23 @@ public sealed class DeleteModel(AccountSelfService selfService, WorkLedgerDbCont
 
     public string? Error { get; private set; }
 
+    /// <summary>
+    /// The current password, the first gate. A bound property rather than a handler argument, as is
+    /// <see cref="ConfirmEmail"/>, because MVC's Trace-level "executing handler … with arguments" line would
+    /// otherwise print it.
+    /// </summary>
+    [BindProperty]
+    public string? Password { get; set; }
+
+    /// <summary>The account's email typed out, the second gate; bound, not an argument, for the reason on <see cref="Password"/>.</summary>
+    [BindProperty]
+    public string? ConfirmEmail { get; set; }
+
     public Task<IActionResult> OnGetAsync(CancellationToken cancellationToken) => RenderAsync(cancellationToken);
 
-    public async Task<IActionResult> OnPostAsync(string? password, string? confirmEmail, CancellationToken cancellationToken)
+    public async Task<IActionResult> OnPostAsync(CancellationToken cancellationToken)
     {
-        switch (await selfService.DeleteAccountAsync(PortalSession.UserId(User), password, confirmEmail, cancellationToken))
+        switch (await selfService.DeleteAccountAsync(PortalSession.UserId(User), Password, ConfirmEmail, cancellationToken))
         {
             case SelfServiceOutcome.Done:
                 await HttpContext.SignOutAsync(PortalSession.Scheme);

@@ -30,21 +30,35 @@ public sealed class SecurityModel(AccountSelfService selfService, AuthOptions au
 
     public string? Error { get; private set; }
 
+    /// <summary>
+    /// The password being replaced. A bound property rather than a handler argument, as are the two below,
+    /// because MVC's Trace-level "executing handler … with arguments" line would otherwise print it.
+    /// </summary>
+    [BindProperty]
+    public string? CurrentPassword { get; set; }
+
+    /// <summary>The new password; bound, not an argument, for the reason on <see cref="CurrentPassword"/>.</summary>
+    [BindProperty]
+    public string? NewPassword { get; set; }
+
+    /// <summary>The new password typed again; bound, not an argument, for the reason on <see cref="CurrentPassword"/>.</summary>
+    [BindProperty]
+    public string? ConfirmPassword { get; set; }
+
     public void OnGet()
     {
     }
 
-    public async Task<IActionResult> OnPostPasswordAsync(
-        string? currentPassword, string? newPassword, string? confirmPassword, CancellationToken cancellationToken)
+    public async Task<IActionResult> OnPostPasswordAsync(CancellationToken cancellationToken)
     {
-        if (!string.Equals(newPassword, confirmPassword, StringComparison.Ordinal))
+        if (!string.Equals(NewPassword, ConfirmPassword, StringComparison.Ordinal))
         {
             Error = "The two new passwords don't match. Nothing was changed.";
             return Page();
         }
 
         var result = await selfService.ChangePasswordAsync(
-            PortalSession.UserId(User), currentPassword, newPassword, cancellationToken);
+            PortalSession.UserId(User), CurrentPassword, NewPassword, cancellationToken);
 
         switch (result.Outcome)
         {

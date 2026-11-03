@@ -55,10 +55,22 @@ public sealed class InvitesModel(
     /// <summary>Whether <see cref="EmailNote"/> reports a queued message, rather than a full queue.</summary>
     public bool EmailQueued { get; private set; }
 
+    /// <summary>
+    /// The address the new invite is for. A bound property rather than a handler argument, as is
+    /// <see cref="InviteNote"/>, because MVC's Trace-level "executing handler … with arguments" line would
+    /// otherwise print it.
+    /// </summary>
+    [BindProperty(Name = "email")]
+    public string? InviteEmail { get; set; }
+
+    /// <summary>The operator's free-text note, which may well name the invitee; bound for the reason on <see cref="InviteEmail"/>.</summary>
+    [BindProperty(Name = "note")]
+    public string? InviteNote { get; set; }
+
     public Task<IActionResult> OnGetAsync(CancellationToken cancellationToken) => RenderAsync(cancellationToken);
 
     public async Task<IActionResult> OnPostCreateAsync(
-        string? email, int? expiresInDays, string? note, bool sendEmail, CancellationToken cancellationToken)
+        int? expiresInDays, bool sendEmail, CancellationToken cancellationToken)
     {
         if (!ModelState.IsValid)
         {
@@ -69,7 +81,7 @@ public sealed class InvitesModel(
         }
 
         var result = await invites.IssueAsync(
-            PortalSession.UserId(User), email, expiresInDays, note, sendEmail, cancellationToken);
+            PortalSession.UserId(User), InviteEmail, expiresInDays, InviteNote, sendEmail, cancellationToken);
 
         switch (result)
         {
@@ -80,7 +92,7 @@ public sealed class InvitesModel(
                 {
                     EmailQueued = wasQueued;
                     EmailNote = wasQueued
-                        ? $"Queued for delivery to {email!.Trim()}."
+                        ? $"Queued for delivery to {InviteEmail!.Trim()}."
                         : "The mail queue is full, so this invite wasn't emailed; copy the link below instead.";
                 }
 
