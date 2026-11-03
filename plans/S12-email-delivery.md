@@ -50,8 +50,16 @@ S10 named three objections. This plan answers each of them:
    self-hosted box may only have SMTP. One transport covers all of them. Adding a provider SDK would mean one
    integration per vendor, and none of them would be the one the operator happens to use.
 2. **Off by default, and off means absent.** This is S11's `Web:Enabled` rule again. With `Email:Enabled`
-   unset, no sender is registered, no queue runs, and no page or form field mentions email. An upgraded
-   deployment behaves exactly as S11 until the operator turns email on.
+   unset, no other `Email:*` key is read or needed, no mail worker runs, and no page or form field mentions
+   email. An upgraded deployment behaves exactly as S11 until the operator turns email on.
+   - *As built in A:* the decision can't be made around the DI registration, because `WebApplicationFactory`
+     applies configuration only at `Build()` (the `PortalSetup` problem). `EmailSetup` instead registers the
+     hosted service through a factory that runs when the host starts. With email off, the factory returns an
+     empty placeholder, so `EmailDeliveryService` is never constructed. `EmailOutbox` has no channel then, and
+     `TryEnqueue` **throws**.
+   - **So every caller checks `EmailOptions.Enabled` on the server before enqueueing** (items 8, 9, 11, 12
+     and 17). Hiding a control is not the check: a POST that asks for email while it's off is refused like any
+     other invalid input, never a 500.
 3. **Email requires the portal.** Every link in a message goes to a portal page and is built from
    `Web:PublicBaseUrl`, which `PortalLinks` already treats as the only source of absolute links.
    `Email:Enabled=true` with the portal off is a configuration error at startup, and the error names both
@@ -188,7 +196,7 @@ portable to any relay, and Resend supports it fully.
 3. **`EmailOutbox`: a bounded `Channel<OutgoingEmail>` drained by `EmailDeliveryService : BackgroundService`.**
    - Capacity comes from `Email:QueueCapacity`, and the channel is created with `BoundedChannelFullMode.Wait`.
      Callers use `TryWrite` and never wait. A full queue returns false, and each caller decides what that
-     means (items 8, 9 and 12).
+     means (items 8, 9 and 12). With email off there is no channel, and enqueueing throws (decision 2).
    - **Retry only transient failures.** Retry up to three times with backoff (about 5 seconds, 30 seconds,
      then 2 minutes) for connection failures, timeouts and SMTP 4xx replies. A 5xx reply, such as a rejected
      recipient or a refused sender, is permanent and is not retried.
@@ -338,6 +346,8 @@ portable to any relay, and Resend supports it fully.
       the time in UTC and says: "If this wasn't you, use *Forgot your password?* on the sign-in page, or
       contact your administrator."
     - Delivery is best effort through the queue. A failed or dropped notice never fails the password change.
+    - With email off, the services check `EmailOptions.Enabled` and queue nothing (decision 2). The password
+      change behaves exactly as on S11.
     - It is not sent for sign-out-everywhere or for account deletion. The first changes no credential. After
       the second there is no account left to protect, and notifying an address after its account is deleted
       creates a record nobody asked for.
@@ -367,7 +377,11 @@ portable to any relay, and Resend supports it fully.
       - The full existing suite passes with **no test modified**.
       - `/portal/forgot` and `/portal/admin/email` return `404`.
       - Neither the login, invites nor users page renders an email control.
-      - No `EmailDeliveryService` is registered.
+      - No `EmailDeliveryService` is constructed or started. Group A already covers this
+        (`EmailStartupTests.TheMailWorker_RunsOnlyWhileEmailIsOn`).
+      - A POST that asks for email while it's off (a forged invites or users form, or `/admin/*` with
+        `sendEmail`) is refused, and nothing throws.
+      - A password change records no notice.
     - **Startup:** each of these fails startup, and the error names the key:
       - enabled with no host;
       - enabled with no from address;
