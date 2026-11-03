@@ -14,12 +14,26 @@ namespace WorkLedger.Server.Web;
 /// spent only when that form is posted. A token must never be a path segment — the request log records
 /// paths. Tokens are base64url (see <c>SingleUseToken</c>), so they need no escaping here.
 /// </para>
+/// <para>
+/// From S12 these links also leave the server in email (<c>EmailMessages</c>), which is safe for the same
+/// two reasons: the token is in the fragment, and no GET spends one, so a mail scanner that opens every
+/// link before the recipient does burns nothing.
+/// </para>
 /// </summary>
 public sealed class PortalLinks(WebOptions web)
 {
-    public string Invite(string token) => $"{BaseUrl}{WebOptions.PortalPath}/register#invite={token}";
+    public string Invite(string token) => $"{RegisterPage}#invite={token}";
 
-    public string PasswordReset(string token) => $"{BaseUrl}{WebOptions.PortalPath}/reset#token={token}";
+    public string PasswordReset(string token) => $"{ResetPage}#token={token}";
+
+    /// <summary>
+    /// The registration page on its own, for an emailed invite's "paste this code" fallback — a mail
+    /// gateway that rewrites links may drop the fragment (see <c>EmailMessages</c>).
+    /// </summary>
+    public string RegisterPage => $"{BaseUrl}{WebOptions.PortalPath}/register";
+
+    /// <summary>The reset page on its own, for the same fallback as <see cref="RegisterPage"/>.</summary>
+    public string ResetPage => $"{BaseUrl}{WebOptions.PortalPath}/reset";
 
     private string BaseUrl =>
         web.PublicBaseUrl
