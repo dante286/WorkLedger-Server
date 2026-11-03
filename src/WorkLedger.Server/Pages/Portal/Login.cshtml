@@ -1,5 +1,6 @@
 @page
 @model WorkLedger.Server.Pages.Portal.LoginModel
+@inject EmailOptions MailSettings
 @{
     ViewData["Title"] = "Sign in";
 }
@@ -25,4 +26,8 @@
         <input id="password" name="Password" type="password" autocomplete="current-password" required>
         <button type="submit" class="primary">Sign in</button>
     </form>
+    @if (MailSettings.Enabled)
+    {
+        <p><a href="/portal/forgot">Forgot your password?</a></p>
+    }
 </section>

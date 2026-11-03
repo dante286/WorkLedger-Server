@@ -14,9 +14,9 @@ namespace WorkLedger.Server.Auth;
 /// issue, and to whom, is <see cref="AdminOperations.IssuePasswordResetAsync"/>'s decision.
 /// </para>
 /// <para>
-/// <b>No email is sent</b> — this server has no SMTP, and gaining one is a dependency and a decision,
-/// not a detail. The admin passes the token on however they are already talking to the person.
-/// Self-service "forgot my password" is the follow-up that needs mail.
+/// <b>No email is sent from here.</b> The callers decide that: an admin can have a reset emailed
+/// (<see cref="AdminOperations.IssuePasswordResetAsync"/>), and <see cref="SelfServiceRecovery"/> issues and
+/// emails one when a user asks at <c>/portal/forgot</c> (S12). Either way the token is minted here, once.
 /// </para>
 /// </summary>
 public sealed class PasswordResetService(
@@ -42,9 +42,16 @@ public sealed class PasswordResetService(
     /// the same account, and the one that went astray is the one nobody is watching. There is at most one
     /// live reset per user at any moment, by construction.
     /// </para>
+    /// <para>
+    /// <b>Self-service issues come through here too</b> (<paramref name="selfService"/>, S12), rather than a
+    /// second method, so that invalidation stays in one place: a self-service issue kills an outstanding
+    /// admin-issued link exactly as a reissue does. It differs only in the row's
+    /// <see cref="PasswordReset.SelfService"/> flag, a null <paramref name="createdByUserId"/>, and the
+    /// shorter <c>Auth:SelfServiceResetExpiryMinutes</c> lifetime.
+    /// </para>
     /// </summary>
     public async Task<IssuedPasswordReset> IssueAsync(
-        int userId, int createdByUserId, CancellationToken cancellationToken)
+        int userId, int? createdByUserId, bool selfService, CancellationToken cancellationToken)
     {
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
 
@@ -59,8 +66,11 @@ public sealed class PasswordResetService(
             TokenHash = SingleUseToken.Hash(token),
             UserId = userId,
             CreatedByUserId = createdByUserId,
+            SelfService = selfService,
             CreatedAt = now,
-            ExpiresAtUtc = now.AddHours(auth.PasswordResetExpiryHours),
+            ExpiresAtUtc = selfService
+                ? now.AddMinutes(auth.SelfServiceResetExpiryMinutes)
+                : now.AddHours(auth.PasswordResetExpiryHours),
         };
         db.PasswordResets.Add(reset);
         await db.SaveChangesAsync(cancellationToken);

@@ -41,9 +41,12 @@ internal sealed class RecordingEmailSender : IEmailSender
     /// Asserts nothing was sent, after giving the delivery worker long enough that anything queued would
     /// have arrived.
     /// </summary>
-    public async Task AssertNoneAsync()
+    public Task AssertNoneAsync() => AssertCountStaysAsync(0);
+
+    /// <summary>Asserts the attempt count is still <paramref name="count"/> once the worker has had time to add to it.</summary>
+    public async Task AssertCountStaysAsync(int count)
     {
         await Task.Delay(200);
-        Assert.Empty(_attempts);
+        Assert.Equal(count, _attempts.Count);
     }
 }

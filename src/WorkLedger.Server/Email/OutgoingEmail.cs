@@ -16,6 +16,32 @@ public enum EmailKind
 public sealed record EmailContent(string Subject, string Body);
 
 /// <summary>
+/// One item of work in <see cref="EmailOutbox"/>: either a message ready to send (<see cref="OutgoingEmail"/>)
+/// or a request whose message <see cref="EmailDeliveryService"/> has yet to decide on
+/// (<see cref="ForgotPasswordRequest"/>). Like everything in the queue it lives in memory only, and is never
+/// serialized, logged or persisted.
+/// </summary>
+public abstract record EmailWork;
+
+/// <summary>
+/// Someone asked at <c>/portal/forgot</c> for a reset link to be sent to <see cref="NormalizedEmail"/> (S12).
+/// <para>
+/// <b>This is all the request does</b>: the page puts one of these on the queue and answers, the same way
+/// for every address, without looking anything up. Whether that address has an account, whether it may
+/// have a reset, and the reset itself are decided later, off the request path, by <c>SelfServiceRecovery</c>
+/// — so neither the page's content nor its timing says whether the account exists.
+/// </para>
+/// <para>
+/// The address is the caller's input, not anything this server holds: its <see cref="object.ToString"/>
+/// prints nothing of it.
+/// </para>
+/// </summary>
+public sealed record ForgotPasswordRequest(string NormalizedEmail) : EmailWork
+{
+    protected override bool PrintMembers(StringBuilder builder) => false;
+}
+
+/// <summary>
 /// One message on its way to the relay.
 /// <para>
 /// <b>It may hold a live token</b> — an invite or reset link, and the same token again on its own line —
@@ -36,9 +62,9 @@ public sealed record EmailContent(string Subject, string Body);
 /// </param>
 /// <param name="To">The recipient's address. <b>Never logged.</b></param>
 /// <param name="Content">The rendered message. <b>Never logged</b>: it may contain a token.</param>
-public sealed record OutgoingEmail(EmailKind Kind, int? UserId, string To, EmailContent Content)
+public sealed record OutgoingEmail(EmailKind Kind, int? UserId, string To, EmailContent Content) : EmailWork
 {
-    private bool PrintMembers(StringBuilder builder)
+    protected override bool PrintMembers(StringBuilder builder)
     {
         builder.Append("Kind = ").Append(Kind).Append(", UserId = ").Append(UserId?.ToString() ?? "-");
         return true;

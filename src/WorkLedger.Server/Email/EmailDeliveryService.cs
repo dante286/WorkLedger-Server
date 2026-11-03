@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Net.Sockets;
 using Microsoft.Extensions.DependencyInjection;
+using WorkLedger.Server.Auth;
 using MailKit;
 using MailKit.Net.Smtp;
 using MailKit.Security;
@@ -21,6 +22,15 @@ namespace WorkLedger.Server.Email;
 /// at a time.
 /// </para>
 /// <para>
+/// <b>A <see cref="ForgotPasswordRequest"/> is decided here, not in the request that queued it</b> (S12):
+/// <c>SelfServiceRecovery</c> runs in a scope of its own, looks the address up, applies the eligibility
+/// rules and the cooldown, issues the reset, and hands back the message — which is then delivered like any
+/// other. Doing that work off the request path is what keeps <c>/portal/forgot</c>'s timing the same for
+/// every address. One reader also means two requests for one user are never decided at once, so the
+/// cooldown needs no lock. A request that fails before a message exists is dropped with one log line, as an
+/// undeliverable message is.
+/// </para>
+/// <para>
 /// <b>Log lines carry the message kind, the user id and the SMTP status — never an address and never the
 /// relay's reply text.</b> S8's rule ("the user id and never the email") meets a new problem here: SMTP
 /// error replies routinely quote the recipient (<c>550 5.1.1 &lt;bob@example.com&gt;: Recipient address
@@ -39,40 +49,88 @@ public sealed class EmailDeliveryService : BackgroundService
 
     private readonly EmailOutbox _outbox;
     private readonly IEmailSender _sender;
+    private readonly IServiceScopeFactory? _scopes;
     private readonly ILogger<EmailDeliveryService> _logger;
     private readonly IReadOnlyList<TimeSpan> _retryDelays;
 
     [ActivatorUtilitiesConstructor]
-    public EmailDeliveryService(EmailOutbox outbox, IEmailSender sender, ILogger<EmailDeliveryService> logger)
-        : this(outbox, sender, logger, DefaultRetryDelays)
+    public EmailDeliveryService(
+        EmailOutbox outbox, IEmailSender sender, IServiceScopeFactory scopes, ILogger<EmailDeliveryService> logger)
+        : this(outbox, sender, logger, DefaultRetryDelays, scopes)
     {
     }
 
-    /// <summary>For tests, which cannot wait two and a half minutes to watch a message give up.</summary>
+    /// <summary>
+    /// For tests, which cannot wait two and a half minutes to watch a message give up. Without
+    /// <paramref name="scopes"/> only ready-made messages can be handled.
+    /// </summary>
     public EmailDeliveryService(
         EmailOutbox outbox,
         IEmailSender sender,
         ILogger<EmailDeliveryService> logger,
-        IReadOnlyList<TimeSpan> retryDelays)
+        IReadOnlyList<TimeSpan> retryDelays,
+        IServiceScopeFactory? scopes = null)
     {
         _outbox = outbox;
         _sender = sender;
         _logger = logger;
         _retryDelays = retryDelays;
+        _scopes = scopes;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         try
         {
-            await foreach (var message in _outbox.Reader.ReadAllAsync(stoppingToken))
+            await foreach (var work in _outbox.Reader.ReadAllAsync(stoppingToken))
             {
-                await DeliverAsync(message, stoppingToken);
+                var message = work switch
+                {
+                    OutgoingEmail ready => ready,
+                    ForgotPasswordRequest request => await DecideAsync(request, stoppingToken),
+                    _ => throw new InvalidOperationException($"Unknown email work: {work.GetType().Name}."),
+                };
+
+                if (message is not null)
+                {
+                    await DeliverAsync(message, stoppingToken);
+                }
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
             // Shutdown. Whatever is still queued is lost, by design — see EmailOutbox.
+        }
+    }
+
+    /// <summary>
+    /// The message a forgotten-password request turns into, or null when it turns into none — no eligible
+    /// account, the cooldown, or a failure, which is logged by type only (the address it was for is never
+    /// logged).
+    /// </summary>
+    private async Task<OutgoingEmail?> DecideAsync(ForgotPasswordRequest request, CancellationToken stoppingToken)
+    {
+        if (_scopes is null)
+        {
+            throw new InvalidOperationException("Forgotten-password requests need a service scope factory.");
+        }
+
+        try
+        {
+            await using var scope = _scopes.CreateAsyncScope();
+            return await scope.ServiceProvider.GetRequiredService<SelfServiceRecovery>()
+                .PrepareAsync(request.NormalizedEmail, stoppingToken);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            // No `exception:` argument, for the reason this class's doc gives.
+            _logger.LogWarning(
+                "Dropped a forgotten-password request: {ExceptionType} while deciding it.", exception.GetType().Name);
+            return null;
         }
     }
 

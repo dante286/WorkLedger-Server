@@ -49,8 +49,29 @@ public sealed class PasswordReset
     /// <summary>The account this resets. Not nullable: a reset without one is not a reset.</summary>
     public int UserId { get; set; }
 
-    /// <summary>The admin who issued it, or null once that account has been deleted.</summary>
+    /// <summary>
+    /// The admin who issued it, or null once that account has been deleted — and always null for a
+    /// <see cref="SelfService"/> issue, which no admin made.
+    /// </summary>
     public int? CreatedByUserId { get; set; }
+
+    /// <summary>
+    /// Whether the user asked for this themselves at <c>/portal/forgot</c> (S12), rather than an admin
+    /// issuing it.
+    /// <para>
+    /// <b>Its own column because <see cref="CreatedByUserId"/> cannot say it</b>: null there already means
+    /// "the issuing admin has since been deleted". The self-service cooldown (<c>Email:ResetCooldownMinutes</c>)
+    /// counts only these rows, and only self-service requests wait on it — an admin-issued reset never does.
+    /// </para>
+    /// <para>
+    /// <b>A self-service issue still invalidates an outstanding admin-issued link</b>, as every new issue
+    /// does (<c>PasswordResetService.IssueAsync</c>): there is at most one live reset per user, whoever asked
+    /// for it. That is what the cooldown limits — without it, anyone who knows the address could keep
+    /// cancelling the link the real user is about to click.
+    /// </para>
+    /// <para>Every row from before S12 is false, which is accurate: an admin issued each one.</para>
+    /// </summary>
+    public bool SelfService { get; set; }
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
@@ -58,7 +79,9 @@ public sealed class PasswordReset
     /// When this stops working. The default window is <c>Auth:PasswordResetExpiryHours</c> — <b>hours,
     /// where an invite gets days</b>, and that difference is the point: an invite is an arrangement made
     /// in advance, while a reset is handed over during a conversation that is happening now. A reset
-    /// still live a fortnight later is a credential nobody is watching.
+    /// still live a fortnight later is a credential nobody is watching. A <see cref="SelfService"/> one
+    /// gets <c>Auth:SelfServiceResetExpiryMinutes</c> instead; stored per row, so redemption needs to know
+    /// neither.
     /// </summary>
     public DateTime ExpiresAtUtc { get; set; }
 

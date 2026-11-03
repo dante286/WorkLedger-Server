@@ -426,7 +426,7 @@ public sealed class AdminOperations(
             return (AdminOutcome.NoCredentials, null, null);
         }
 
-        var reset = await passwordResets.IssueAsync(userId, actorUserId, cancellationToken);
+        var reset = await passwordResets.IssueAsync(userId, actorUserId, selfService: false, cancellationToken);
 
         Audit(loggerFactory, actorUserId, "issue-password-reset", userId);
         if (!sendEmail)
